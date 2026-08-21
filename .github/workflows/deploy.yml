@@ -22,10 +22,10 @@ jobs:
           - service: frontend
             path: ./frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Install Railway CLI
         run: npm install --global @railway/cli
       - name: Deploy service
@@ -37,4 +37,3 @@ jobs:
           --environment production
           --service ${{ matrix.service }}
           --message "GitHub $GITHUB_SHA"
-
