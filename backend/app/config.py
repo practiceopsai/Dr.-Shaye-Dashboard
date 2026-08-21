@@ -1,0 +1,24 @@
+from functools import lru_cache
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
+    orgo_api_key: str = ""
+    orgo_computer_id: str = "87381d65-cb68-4307-833c-ea9770d07fd1"
+    composio_consumer_api_key: str = ""
+    dashboard_access_token: str = ""
+    allowed_origins: str = "http://localhost:3000"
+    live_actions_enabled: bool = False
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def origins(self) -> list[str]:
+        return [value.strip() for value in self.allowed_origins.split(",") if value.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
