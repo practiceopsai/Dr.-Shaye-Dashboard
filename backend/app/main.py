@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
-from .integrations import OrgoHermesClient, integration_health
+from .integrations import ComposioMCPClient, OrgoHermesClient, integration_health
 from .models import ApprovalRequest, ExecuteRequest, FeedbackRequest, VoiceRequest
 from .priorities import build_dashboard
 from .security import contains_phi, payload_hash, require_auth
@@ -84,7 +84,30 @@ async def execute(req: ExecuteRequest):
         except Exception as exc:
             approval["used"] = False
             raise HTTPException(503, f"Hermes queue unavailable: {type(exc).__name__}")
-    raise HTTPException(501, "Direct Composio execution is disabled until an allowlisted tool contract is configured")
+    if contains_phi(str(action.get("arguments", {}))):
+        approval["used"] = False
+        raise HTTPException(422, "Approved action may contain clinical or patient-identifiable content")
+    client = ComposioMCPClient(settings)
+    try:
+        clean_arguments = client.validate_write(action.get("tool_name") or "", action.get("arguments") or {})
+    except ValueError as exc:
+        approval["used"] = False
+        raise HTTPException(422, str(exc))
+
+    # From this point the approval remains consumed. A transport failure can be
+    # ambiguous after a write, so the system must never retry it automatically.
+    try:
+        result = await client.execute_allowlisted(action.get("tool_name") or "", clean_arguments)
+    except Exception as exc:
+        raise HTTPException(502, f"Action outcome is unknown; approval consumed to prevent duplicates: {type(exc).__name__}")
+
+    detail = f"EXECUTED via dashboard: {item['title']} | tool: {result['tool']} | approval hash: {approval['hash']} | resource: {result.get('resource_id') or 'created'}"
+    try:
+        await OrgoHermesClient(settings).record("commitment-capture", "Dashboard action executed through Composio", [detail])
+        writeback = True
+    except Exception:
+        writeback = False
+    return {"status": "executed", "approval_hash": approval["hash"], "result": result, "hermes_writeback": writeback}
 
 
 @app.post("/api/voice", dependencies=[Depends(require_auth)])
@@ -92,4 +115,3 @@ async def voice(req: VoiceRequest):
     if contains_phi(req.transcript):
         raise HTTPException(422, "Voice command may contain clinical or patient-identifiable content")
     return {"status": "parsed", "message": "Voice transcript captured. Confirm actions individually before execution.", "transcript": req.transcript}
-

@@ -1,10 +1,11 @@
 import json
 import logging
 import re
+import asyncio
 from datetime import datetime
 from anthropic import AsyncAnthropic
 from .config import Settings
-from .integrations import OrgoHermesClient, integration_health
+from .integrations import ComposioMCPClient, OrgoHermesClient, integration_health
 from .models import ActionSpec, DashboardPayload, PriorityCard
 
 
@@ -63,9 +64,20 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
     cards: list[PriorityCard]
     live = False
     try:
-        context = await OrgoHermesClient(settings).context()
+        context, signal_result = await asyncio.gather(
+            OrgoHermesClient(settings).context(),
+            ComposioMCPClient(settings).personal_signals(),
+            return_exceptions=True,
+        )
+        if isinstance(context, Exception):
+            raise context
         if not context.strip():
             raise RuntimeError("Hermes returned no context")
+        if isinstance(signal_result, Exception):
+            warnings.append(f"Personal inbox/calendar signals unavailable: {type(signal_result).__name__}")
+            signals = "No fresh personal inbox or calendar signals were available."
+        else:
+            signals = signal_result or "No relevant personal inbox or calendar signals were found."
         client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         message = await client.messages.create(
             model=settings.anthropic_model,
@@ -73,7 +85,7 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
             # emitting the JSON dashboard; 2,400 could end with no text block.
             max_tokens=6000,
             system=SYSTEM,
-            messages=[{"role":"user","content":f"Today is {datetime.now().astimezone().isoformat()}. Build the dashboard from this retrieved, potentially stale source material. Cite its file/heading in source.\n\n{context}"}],
+            messages=[{"role":"user","content":f"Today is {datetime.now().astimezone().isoformat()}. Build the dashboard from the sources below. Vault material may be stale. Personal signals are metadata only and may be incomplete. Cite either the vault file/heading or personal inbox/calendar in source.\n\n--- HERMES VAULT ---\n{context}\n\n--- PERSONAL SIGNALS (NO MESSAGE BODIES OR EVENT DESCRIPTIONS) ---\n{signals}"}],
         )
         parsed = _extract_json("".join(block.text for block in message.content if hasattr(block, "text")))
         cards = []

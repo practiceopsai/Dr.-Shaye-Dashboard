@@ -5,7 +5,7 @@ Action-oriented daily command center for Dr. Omid Shaye. The application combine
 ## Architecture
 
 - `frontend/` — Next.js App Router UI.
-- `backend/` — FastAPI API, Anthropic priority synthesis, Orgo/Hermes bridge, Composio MCP health, approval ledger.
+- `backend/` — FastAPI API, Anthropic priority synthesis, Orgo/Hermes bridge, personal-account Composio signals, approval ledger.
 - Hermes connection — the dashboard reads the same production vault and records feedback/approvals through its governed run lifecycle.
 - External actions — only exact, allowlisted tool calls may execute; all others become approval packages for Hermes.
 
@@ -31,8 +31,10 @@ See `backend/.env.example`. Secrets must be configured in Railway, never committ
 ## Safety model
 
 - No practice-account or patient-identifiable data is ingested.
+- Gmail reads are metadata-only; calendar descriptions and email bodies are never sent to the model.
+- Every Composio call is pinned to explicitly configured personal connection IDs.
 - Every action package includes the exact payload and SHA-256 approval hash.
 - Editing a payload invalidates its approval.
 - Unsupported actions are queued for Hermes instead of being guessed.
+- Direct writes are limited to plain-text Gmail sends and Google Calendar creation, and remain off unless `LIVE_ACTIONS_ENABLED=true`.
 - Aspirational context is a planning tie-breaker, never a factual claim or authorization.
-

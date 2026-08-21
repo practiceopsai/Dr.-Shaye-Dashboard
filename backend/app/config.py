@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     orgo_api_key: str = ""
     orgo_computer_id: str = "87381d65-cb68-4307-833c-ea9770d07fd1"
     composio_consumer_api_key: str = ""
+    composio_personal_gmail_account: str = ""
+    composio_personal_calendar_account: str = ""
+    dashboard_timezone: str = "America/Los_Angeles"
     dashboard_access_token: str = ""
     allowed_origins: str = "http://localhost:3000"
     live_actions_enabled: bool = False
