@@ -37,7 +37,7 @@ for rel in ["CURRENT_STATUS.md", "daily-briefing/PLAYBOOK.md", "design/governanc
     p=v/rel
     if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:7000])
 for q in ["What commitments, deadlines, waiting-on items, and active projects matter now?", "What are Omid's current priority and protected-time rules?"]:
-    r=subprocess.run(["python", "tools/run.py", "ask", q, "--top", "4"], cwd=v, capture_output=True, text=True, timeout=60)
+    r=subprocess.run(["python", "tools/run.py", "ask", q, "--top", "4"], cwd=v, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     parts.append(f"\n--- retrieval: {q} ---\n"+r.stdout[:10000])
 print("".join(parts))
 '''
@@ -55,11 +55,11 @@ payload=json.loads({json.dumps(envelope)})
 marker=v/".run-active"
 if marker.exists():
     raise SystemExit("Hermes run is active; dashboard write deferred")
-s=subprocess.run(["python","tools/run.py","start","--workflow",{workflow!r}],cwd=v,capture_output=True,text=True,timeout=60)
+s=subprocess.run(["python","tools/run.py","start","--workflow",{workflow!r}],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=60)
 if s.returncode: raise SystemExit(s.stderr or s.stdout)
 result={{"type":"dashboard","summary":payload["summary"],"workflow":{workflow!r},"mode":"approved_ui_action","results":payload["details"],"checks":[],"anomalies":[],"errors_hit":[],"new_errors":[],"learnings":[],"memory_candidates":[],"approvals_requested":[],"external_actions":[],"deferred":[]}}
 p=v/"result-dashboard.json"; p.write_text(json.dumps(result,indent=2),encoding="utf-8")
-f=subprocess.run(["python","tools/run.py","finish","--workflow",{workflow!r},"--json",str(p)],cwd=v,capture_output=True,text=True,timeout=180)
+f=subprocess.run(["python","tools/run.py","finish","--workflow",{workflow!r},"--json",str(p)],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=180)
 try: p.unlink()
 except OSError: pass
 if f.returncode: raise SystemExit(f.stderr or f.stdout)
@@ -116,4 +116,3 @@ async def integration_health(settings: Settings) -> dict[str, bool]:
 
     hermes_ok, composio_ok = await asyncio.gather(orgo_check(), composio_check())
     return {"hermes": hermes_ok, "composio": composio_ok, "anthropic": bool(settings.anthropic_api_key)}
-
