@@ -1,0 +1,40 @@
+name: Deploy to Railway
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: railway-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            path: ./backend
+          - service: frontend
+            path: ./frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Railway CLI
+        run: npm install --global @railway/cli
+      - name: Deploy service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: >-
+          railway up ${{ matrix.path }} --path-as-root --ci
+          --project 3f61b78e-9f6d-45c4-ad89-91ded7851330
+          --environment production
+          --service ${{ matrix.service }}
+          --message "GitHub $GITHUB_SHA"
+
