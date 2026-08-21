@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-5-20250929"
+    anthropic_model: str = "claude-sonnet-4-20250514"
     orgo_api_key: str = ""
     orgo_computer_id: str = "87381d65-cb68-4307-833c-ea9770d07fd1"
     composio_consumer_api_key: str = ""
@@ -21,4 +21,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
