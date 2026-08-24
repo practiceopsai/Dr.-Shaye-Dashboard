@@ -61,6 +61,12 @@ def _eli_agent_text(value: object) -> str:
     return _LEGACY_AGENT_TERM.sub("Eli Agent", str(value or ""))
 
 
+def _rag_sync_ok(context: str) -> bool:
+    """Only report preference sync when the agent confirms a successful RAG query."""
+    match = re.search(r"RAG queries succeeded:\s*(\d+)/(\d+)", context)
+    return bool(match and int(match.group(1)) > 0)
+
+
 def _extract_json(text: str) -> dict:
     """Defensively pull the first JSON object out of model text. Never eval."""
     decoder = json.JSONDecoder()
@@ -189,6 +195,7 @@ def fallback_cards() -> list[PriorityCard]:
 
 async def build_dashboard(settings: Settings) -> DashboardPayload:
     health = await integration_health(settings)
+    health["preference_sync"] = False
     warnings: list[str] = []
     cards: list[PriorityCard]
     live = False
@@ -202,6 +209,7 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
             raise context
         if not context.strip():
             raise RuntimeError("Eli Agent returned no context")
+        health["preference_sync"] = _rag_sync_ok(context)
         if isinstance(signal_result, Exception):
             warnings.append(f"Personal inbox/calendar signals unavailable: {type(signal_result).__name__}")
             signals = "No fresh personal inbox or calendar signals were available."

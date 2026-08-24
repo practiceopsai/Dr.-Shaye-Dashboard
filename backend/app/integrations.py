@@ -50,38 +50,38 @@ direct=[
     "daily-briefing/PLAYBOOK.md",
     "daily-briefing/LEARNINGS.md",
     "design/governance/approval-and-autonomy.md",
-    "memory/preferences/daily-organization.md",
-    "memory/preferences/time-protection.md",
-    "memory/preferences/approval-posture.md",
-    "memory/preferences/notification-and-vault-updates.md",
-    "memory/preferences/communication-voice.md",
 ]
-for folder in ["briefings/morning", "daily-briefing/logs"]:
+preferences=sorted((v/"memory/preferences").glob("*.md"), key=lambda p:p.stat().st_mtime, reverse=True)
+direct.extend(str(p.relative_to(v)) for p in preferences[:10])
+for folder in ["briefings/morning", "daily-briefing/logs", "commitment-capture/logs"]:
     candidates=sorted((v/folder).glob("*.md"), key=lambda p:p.stat().st_mtime, reverse=True)
     if candidates: direct.append(str(candidates[0].relative_to(v)))
 for rel in direct:
     p=v/rel
-    if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:2500])
+    if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:2200])
 queries=[
+    "What priority corrections, dismissals, useful or not-useful signals, and preference changes has Dr. Shaye given most recently? New explicit feedback should override older defaults.",
     "What commitments, deadlines, waiting-on items, and active projects matter now?",
     "What are Omid's current daily priority rules and protected-time rules?",
-    "What current preferences and standing feedback has Omid given Eli Agent about how to prioritize and present his day?",
     "What did the most recent daily briefing and recent workflow run results report, decide, or leave open?",
 ]
 def ask(q):
     r=subprocess.run(["python", "tools/run.py", "ask", q, "--top", "4"], cwd=v, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    return q,r.stdout[:5000]
+    value=r.stdout if r.returncode == 0 else f"Retrieval failed: {r.stderr or r.stdout}"
+    return q,value[:3500],r.returncode == 0
 answers={}
+retrieval_successes=0
 with ThreadPoolExecutor(max_workers=4) as pool:
     futures=[pool.submit(ask,q) for q in queries]
     for future in as_completed(futures):
-        q,value=future.result(); answers[q]=value
+        q,value,ok=future.result(); answers[q]=value; retrieval_successes += int(ok)
+parts.append(f"\n--- retrieval health ---\nRAG queries succeeded: {retrieval_successes}/{len(queries)}")
 for q in queries:
     parts.append(f"\n--- retrieval: {q} ---\n"+answers.get(q,""))
-print("".join(parts)[:44000])
+print("".join(parts)[:52000])
 '''
         result = await self.exec(code, timeout=110)
-        return result.get("stdout", "")[:44000]
+        return result.get("stdout", "")[:52000]
 
     async def record(
         self,

@@ -10,6 +10,7 @@ from app.priorities import (
     _is_fabio_item,
     _normalize_card,
     _parse_message,
+    _rag_sync_ok,
     _synthesize,
     _validate_dashboard_shape,
 )
@@ -227,3 +228,15 @@ def test_legacy_agent_name_is_removed_from_all_visible_card_fields():
 @pytest.mark.parametrize("legacy", ["Hermes", "HERMES", "hermes agent", "Hermes Agent"])
 def test_eli_agent_text_replaces_legacy_name(legacy):
     assert _eli_agent_text(f"Ask {legacy} now") == "Ask Eli Agent now"
+
+
+@pytest.mark.parametrize(
+    ("context", "expected"),
+    [
+        ("--- retrieval health ---\nRAG queries succeeded: 4/4", True),
+        ("--- retrieval health ---\nRAG queries succeeded: 0/4", False),
+        ("vault text without a retrieval marker", False),
+    ],
+)
+def test_rag_sync_status_requires_a_successful_retrieval(context, expected):
+    assert _rag_sync_ok(context) is expected

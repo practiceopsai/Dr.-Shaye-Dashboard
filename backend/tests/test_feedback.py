@@ -37,7 +37,52 @@ def test_priority_feedback_is_recorded_as_candidate_preference(monkeypatch):
     assert response.json()["status"] == "recorded"
     assert response.json()["next_brief_refresh"] is True
     assert calls[0][0][0] == "daily-briefing"
-    assert calls[0][1]["memory_candidates"] == ["Candidate preference reported by Dr. Shaye: Family commitments should rank above routine administration."]
+    assert calls[0][1]["memory_candidates"] == ["Candidate priority preference reported by Dr. Shaye: Family commitments should rank above routine administration."]
+
+
+def test_item_feedback_writes_priority_context_to_agent_memory(monkeypatch):
+    calls = []
+
+    class RecordingClient:
+        def __init__(self, settings):
+            pass
+
+        async def record(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(main, "EliAgentClient", RecordingClient)
+    main._cache["dashboard"] = (
+        datetime.now(timezone.utc),
+        {
+            "cards": [
+                {
+                    "id": "card-1",
+                    "title": "Prepare the board agenda",
+                    "priority": "P1",
+                    "lane": "now",
+                    "category": "Leadership",
+                    "source": "morning brief",
+                }
+            ]
+        },
+    )
+
+    response = TestClient(main.app).post(
+        "/api/feedback",
+        json={
+            "category": "priority_correction",
+            "item_id": "card-1",
+            "disposition": "not_relevant",
+            "feedback": "This should not be in today's brief.",
+        },
+    )
+
+    assert response.status_code == 200
+    candidate = calls[0][1]["memory_candidates"][0]
+    assert "Disposition: not_relevant" in candidate
+    assert "title: Prepare the board agenda" in candidate
+    assert "priority: P1" in candidate
+    assert "source: morning brief" in candidate
 
 
 def test_dashboard_change_becomes_tracked_work_and_invalidates_cache(monkeypatch):

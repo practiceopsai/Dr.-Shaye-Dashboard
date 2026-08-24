@@ -1,5 +1,6 @@
 const systems = [
   { key: "eli_agent", label: "Eli" },
+  { key: "preference_sync", label: "Preference sync" },
   { key: "composio", label: "Connected apps" },
   { key: "anthropic", label: "Priority engine" },
 ] as const;

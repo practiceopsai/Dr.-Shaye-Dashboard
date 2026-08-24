@@ -17,7 +17,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credent
 
 _cache: dict[str, Any] = {}
 _approvals: dict[str, dict[str, Any]] = {}
-_pending_feedback: dict[str, FeedbackRequest] = {}
+_pending_feedback: dict[str, tuple[FeedbackRequest, str]] = {}
 
 
 def _feedback_destination(req: FeedbackRequest) -> tuple[str, str]:
@@ -28,13 +28,35 @@ def _feedback_destination(req: FeedbackRequest) -> tuple[str, str]:
     return "daily-briefing", "Dashboard priority correction submitted by Dr. Shaye"
 
 
-async def _deliver_feedback(feedback_id: str, req: FeedbackRequest) -> bool:
+def _feedback_item_context(req: FeedbackRequest) -> str:
+    if not req.item_id or not (cached := _cache.get("dashboard")):
+        return ""
+    dashboard_payload = cached[1]
+    cards = dashboard_payload.cards if hasattr(dashboard_payload, "cards") else dashboard_payload.get("cards", [])
+    for card in cards:
+        value = card.model_dump(mode="json") if hasattr(card, "model_dump") else card
+        if value.get("id") != req.item_id:
+            continue
+        context = " | ".join(
+            f"{label}: {str(value.get(field) or '').strip()[:240]}"
+            for label, field in (("title", "title"), ("priority", "priority"), ("lane", "lane"), ("category", "category"), ("source", "source"))
+            if value.get(field)
+        )
+        return "" if contains_phi(context) else context
+    return ""
+
+
+async def _deliver_feedback(feedback_id: str, req: FeedbackRequest, item_context: str = "") -> bool:
     workflow, summary = _feedback_destination(req)
     association = f" | item: {req.item_id}" if req.item_id else " | dashboard-wide"
     disposition = f" | disposition: {req.disposition}" if req.disposition else ""
-    detail = f"Feedback {feedback_id} | category: {req.category}{association}{disposition} | Dr. Shaye said: {req.feedback}"
-    learnings = [f"Reported reinforcement from Dr. Shaye: {req.feedback}"] if req.category == "positive_reinforcement" else []
-    memory_candidates = [f"Candidate preference reported by Dr. Shaye: {req.feedback}"] if req.category == "priority_correction" else []
+    item_detail = f" | {item_context}" if item_context else ""
+    detail = f"Feedback {feedback_id} | category: {req.category}{association}{disposition}{item_detail} | Dr. Shaye said: {req.feedback}"
+    learning_context = f" Regarding {item_context}." if item_context else ""
+    learnings = [f"Reported reinforcement from Dr. Shaye: {req.feedback}{learning_context}"] if req.category == "positive_reinforcement" else []
+    preference_context = f" Item context: {item_context}." if item_context else ""
+    disposition_context = f" Disposition: {req.disposition}." if req.disposition else ""
+    memory_candidates = [f"Candidate priority preference reported by Dr. Shaye: {req.feedback}{disposition_context}{preference_context}"] if req.category == "priority_correction" else []
     try:
         await EliAgentClient(settings).record(
             workflow,
@@ -50,8 +72,8 @@ async def _deliver_feedback(feedback_id: str, req: FeedbackRequest) -> bool:
 
 
 async def _flush_pending_feedback(limit: int = 1) -> None:
-    for feedback_id, request in list(_pending_feedback.items())[:limit]:
-        if not await _deliver_feedback(feedback_id, request):
+    for feedback_id, (request, item_context) in list(_pending_feedback.items())[:limit]:
+        if not await _deliver_feedback(feedback_id, request, item_context):
             break
 
 
@@ -92,9 +114,10 @@ async def feedback(req: FeedbackRequest):
         valid_ids = {card.id if hasattr(card, "id") else card.get("id") for card in cards}
         if req.item_id not in valid_ids:
             raise HTTPException(422, "The associated dashboard item is no longer available")
+    item_context = _feedback_item_context(req)
     feedback_id = f"feedback_{secrets.token_hex(8)}"
-    _pending_feedback[feedback_id] = req
-    recorded = await _deliver_feedback(feedback_id, req)
+    _pending_feedback[feedback_id] = (req, item_context)
+    recorded = await _deliver_feedback(feedback_id, req, item_context)
     _cache.pop("dashboard", None)
     if recorded:
         detail = "Dashboard improvement request recorded with Eli as tracked work." if req.category == "dashboard_change" else "Feedback recorded with Eli and applied to the next priority brief."
@@ -112,10 +135,11 @@ async def feedback(req: FeedbackRequest):
 
 @app.post("/api/feedback/{feedback_id}/retry", response_model=FeedbackResponse, dependencies=[Depends(require_auth)])
 async def retry_feedback(feedback_id: str):
-    req = _pending_feedback.get(feedback_id)
-    if not req:
+    pending = _pending_feedback.get(feedback_id)
+    if not pending:
         raise HTTPException(404, "Queued feedback was not found or was already recorded")
-    recorded = await _deliver_feedback(feedback_id, req)
+    req, item_context = pending
+    recorded = await _deliver_feedback(feedback_id, req, item_context)
     return FeedbackResponse(
         feedback_id=feedback_id,
         status="recorded" if recorded else "queued",
