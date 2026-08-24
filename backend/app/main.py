@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .integrations import ComposioMCPClient, EliAgentClient, integration_health
-from .models import ApprovalRequest, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceRequest
+from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceRequest
 from .priorities import build_dashboard
 from .security import contains_phi, payload_hash, require_auth
 
@@ -92,8 +92,8 @@ async def status():
     }
 
 
-@app.get("/api/dashboard", dependencies=[Depends(require_auth)])
-async def dashboard(refresh: bool = False):
+@app.get("/api/dashboard", response_model=DashboardPayload, dependencies=[Depends(require_auth)])
+async def dashboard(refresh: bool = False) -> DashboardPayload:
     if _pending_feedback:
         await _flush_pending_feedback()
     cached = _cache.get("dashboard")
