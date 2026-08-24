@@ -59,6 +59,13 @@ for folder in ["briefings/morning", "daily-briefing/logs", "commitment-capture/l
 for rel in direct:
     p=v/rel
     if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:2200])
+master=v/"source/context-original/Omid_Shaye_Chief_of_Staff_Master_Context_v0.10.0.md"
+if master.exists():
+    text=master.read_text(encoding="utf-8")
+    start=text.find("## File: `04_OPERATING_SYSTEM/PRIORITY_AND_ESCALATION_ENGINE.md`")
+    if start >= 0:
+        end=text.find("\n## File: `", start + 20)
+        parts.append("\n--- canonical priority and escalation engine ---\n"+text[start:end if end >= 0 else None][:7500])
 queries=[
     "What priority corrections, dismissals, useful or not-useful signals, and preference changes has Dr. Shaye given most recently? New explicit feedback should override older defaults.",
     "What commitments, deadlines, waiting-on items, and active projects matter now?",

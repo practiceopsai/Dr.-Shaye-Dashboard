@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-Priority = Literal["P0", "P1", "P2", "P3", "P4"]
+Priority = Literal["P0", "P1", "P2", "P3", "P4", "P5"]
 Lane = Literal["now", "protect", "delegate", "monitor"]
 
 

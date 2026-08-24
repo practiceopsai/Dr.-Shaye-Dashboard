@@ -5,6 +5,7 @@ import pytest
 
 from app.priorities import (
     FABIO_ACTION_LABEL,
+    _enforce_priority_policy,
     _extract_json,
     _eli_agent_text,
     _is_fabio_item,
@@ -14,6 +15,7 @@ from app.priorities import (
     _synthesize,
     _validate_dashboard_shape,
 )
+from app.models import PriorityCard
 
 
 # --- JSON recovery ---------------------------------------------------------
@@ -185,6 +187,17 @@ def test_tech_detected_in_context_not_just_title():
     assert normalized["action"]["label"] == FABIO_ACTION_LABEL
 
 
+def test_domain_registrar_item_routes_to_fabio():
+    normalized = _normalize_card(_card(
+        priority="P4",
+        lane="monitor",
+        title="Review the GoDaddy verification request",
+        context="Confirm whether a domain registrar deadline applies.",
+    ))
+    assert normalized["lane"] == "monitor"
+    assert normalized["action"]["label"] == FABIO_ACTION_LABEL
+
+
 def test_routing_overrides_model_disagreement():
     card = _card(title="Personally debug the outage tonight", lane="now",
                  action={"label": "Dr. Shaye should SSH in and fix it"})
@@ -198,6 +211,29 @@ def test_non_tech_card_is_untouched_by_routing():
     assert normalized["lane"] == "now"
     assert normalized["action"]["label"] == "Ask Eli Agent to draft the call notes"
     assert normalized["action"]["kind"] == "eli_agent_queue"
+
+
+def test_priority_classes_map_to_their_canonical_action_lanes():
+    assert _normalize_card(_card(priority="P1", lane="protect"))["lane"] == "now"
+    assert _normalize_card(_card(priority="P3", lane="now"))["lane"] == "protect"
+    assert _normalize_card(_card(priority="P4", lane="now"))["lane"] == "delegate"
+
+
+def test_daily_selection_rule_caps_high_value_and_admin_and_omits_p5():
+    cards = [
+        PriorityCard.model_validate(_normalize_card(_card(id=f"high-{index}", priority=priority)))
+        for index, priority in enumerate(["P3", "P2", "P1", "P0"])
+    ]
+    cards.extend(
+        PriorityCard.model_validate(_normalize_card(_card(id=f"admin-{index}", priority="P4")))
+        for index in range(4)
+    )
+    cards.append(PriorityCard.model_validate(_normalize_card(_card(id="someday", priority="P5"))))
+
+    selected = _enforce_priority_policy(cards)
+
+    assert [card.priority for card in selected] == ["P0", "P1", "P2", "P4", "P4", "P4"]
+    assert all(card.id != "someday" for card in selected)
 
 
 def test_lowercase_it_pronoun_does_not_trigger_routing():

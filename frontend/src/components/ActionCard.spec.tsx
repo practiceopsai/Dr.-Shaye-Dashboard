@@ -40,6 +40,12 @@ describe("ActionCard", () => {
     expect(screen.getByRole("button", { name: "Approve & act" })).toBeEnabled();
   });
 
+  it("keeps mission alignment internal until Omid approves displaying it", () => {
+    render(<ActionCard card={card} onChanged={() => undefined} />);
+
+    expect(screen.queryByText("Protect focus")).not.toBeInTheDocument();
+  });
+
   it("sends a priority correction when an item is marked not relevant", async () => {
     const user = userEvent.setup();
     const onChanged = vi.fn();

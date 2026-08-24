@@ -77,7 +77,7 @@ export default function ActionCard({ card, onChanged }: { card: Card; onChanged:
       <p className="context">{card.context}</p>
       <div className="why"><span>Why it matters</span><p>{card.consequence}</p></div>
       <div className="suggestion"><Sparkles size={16} /><div><span>Recommended action</span><p>{card.action.label}</p></div></div>
-      <div className="meta"><span><ShieldCheck size={13} />{card.action.kind === "eli_agent_queue" ? "Eli Agent review" : "Exact action"}</span><span>{card.mission_alignment}</span></div>
+      <div className="meta"><span><ShieldCheck size={13} />{card.action.kind === "eli_agent_queue" ? "Eli Agent review" : "Exact action"}</span></div>
       {error && <p className="error">{error}</p>}
       <div className="card-actions">
         <button className="primary" onClick={execute} disabled={state !== "idle"}>
