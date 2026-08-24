@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
-from .integrations import ComposioMCPClient, OrgoHermesClient, integration_health
+from .integrations import ComposioMCPClient, EliAgentClient, integration_health
 from .models import ApprovalRequest, ExecuteRequest, FeedbackRequest, VoiceRequest
 from .priorities import build_dashboard
 from .security import contains_phi, payload_hash, require_auth
@@ -45,12 +45,12 @@ async def feedback(req: FeedbackRequest):
         raise HTTPException(422, "Feedback may contain clinical or patient-identifiable content and was not stored")
     detail = f"Dashboard item {req.item_id}: {req.disposition} — {req.feedback}"
     try:
-        await OrgoHermesClient(settings).record("daily-briefing", "Dashboard feedback recorded", [detail])
+        await EliAgentClient(settings).record("daily-briefing", "Dashboard feedback recorded", [detail])
         recorded = True
     except Exception:
         recorded = False
     _cache.pop("dashboard", None)
-    return {"status": "recorded" if recorded else "deferred", "hermes_writeback": recorded}
+    return {"status": "recorded" if recorded else "deferred", "eli_agent_writeback": recorded}
 
 
 @app.post("/api/approvals", dependencies=[Depends(require_auth)])
@@ -75,15 +75,15 @@ async def execute(req: ExecuteRequest):
     item = approval["item"]
     action = item["action"]
     # Generic LLM instructions are never converted directly into external calls.
-    # They are durable, exact approval packages that Hermes can safely pick up.
+    # They are durable, exact approval packages that Eli Agent can safely pick up.
     if action["kind"] != "composio" or not settings.live_actions_enabled:
         detail = f"APPROVED via dashboard: {item['title']} | exact action: {action['label']} | approval hash: {approval['hash']}"
         try:
-            await OrgoHermesClient(settings).record("commitment-capture", "Dashboard action approved and queued for Hermes", [detail])
-            return {"status": "queued_for_hermes", "approval_hash": approval["hash"]}
+            await EliAgentClient(settings).record("commitment-capture", "Dashboard action approved and queued for Eli Agent", [detail])
+            return {"status": "queued_for_eli_agent", "approval_hash": approval["hash"]}
         except Exception as exc:
             approval["used"] = False
-            raise HTTPException(503, f"Hermes queue unavailable: {type(exc).__name__}")
+            raise HTTPException(503, f"Eli Agent queue unavailable: {type(exc).__name__}")
     if contains_phi(str(action.get("arguments", {}))):
         approval["used"] = False
         raise HTTPException(422, "Approved action may contain clinical or patient-identifiable content")
@@ -103,11 +103,11 @@ async def execute(req: ExecuteRequest):
 
     detail = f"EXECUTED via dashboard: {item['title']} | tool: {result['tool']} | approval hash: {approval['hash']} | resource: {result.get('resource_id') or 'created'}"
     try:
-        await OrgoHermesClient(settings).record("commitment-capture", "Dashboard action executed through Composio", [detail])
+        await EliAgentClient(settings).record("commitment-capture", "Dashboard action executed through Composio", [detail])
         writeback = True
     except Exception:
         writeback = False
-    return {"status": "executed", "approval_hash": approval["hash"], "result": result, "hermes_writeback": writeback}
+    return {"status": "executed", "approval_hash": approval["hash"], "result": result, "eli_agent_writeback": writeback}
 
 
 @app.post("/api/voice", dependencies=[Depends(require_auth)])

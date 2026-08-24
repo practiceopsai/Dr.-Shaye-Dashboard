@@ -6,6 +6,7 @@ import pytest
 from app.priorities import (
     FABIO_ACTION_LABEL,
     _extract_json,
+    _eli_agent_text,
     _is_fabio_item,
     _normalize_card,
     _parse_message,
@@ -149,7 +150,7 @@ def _card(**overrides):
         "consequence": "Missed deadline.",
         "source": "vault",
         "mission_alignment": "aligned",
-        "action": {"label": "Ask Hermes to draft the call notes"},
+        "action": {"label": "Ask Eli Agent to draft the call notes"},
     }
     base.update(overrides)
     return base
@@ -167,7 +168,7 @@ def test_tech_items_route_to_fabio_as_delegate(title):
     normalized = _normalize_card(_card(title=title, lane="now"))
     assert normalized["lane"] == "delegate"
     assert normalized["action"]["label"] == FABIO_ACTION_LABEL
-    assert normalized["action"]["kind"] == "hermes_queue"
+    assert normalized["action"]["kind"] == "eli_agent_queue"
     assert normalized["action"]["tool_name"] is None
 
 
@@ -194,8 +195,8 @@ def test_routing_overrides_model_disagreement():
 def test_non_tech_card_is_untouched_by_routing():
     normalized = _normalize_card(_card())
     assert normalized["lane"] == "now"
-    assert normalized["action"]["label"] == "Ask Hermes to draft the call notes"
-    assert normalized["action"]["kind"] == "hermes_queue"
+    assert normalized["action"]["label"] == "Ask Eli Agent to draft the call notes"
+    assert normalized["action"]["kind"] == "eli_agent_queue"
 
 
 def test_lowercase_it_pronoun_does_not_trigger_routing():
@@ -206,3 +207,23 @@ def test_lowercase_it_pronoun_does_not_trigger_routing():
 
 def test_uppercase_it_department_triggers_routing():
     assert _is_fabio_item(_card(title="Escalate the IT request"))
+
+
+def test_legacy_agent_name_is_removed_from_all_visible_card_fields():
+    normalized = _normalize_card(_card(
+        category="Hermes Agent",
+        title="Review HERMES update",
+        context="Hermes prepared this.",
+        consequence="Waiting on hermes agent.",
+        source="Hermes vault",
+        action={"label": "Ask Hermes to continue"},
+    ))
+    visible = " ".join(str(normalized[field]) for field in ("category", "title", "context", "consequence", "source"))
+    visible += " " + normalized["action"]["label"]
+    assert "hermes" not in visible.lower()
+    assert "Eli Agent" in visible
+
+
+@pytest.mark.parametrize("legacy", ["Hermes", "HERMES", "hermes agent", "Hermes Agent"])
+def test_eli_agent_text_replaces_legacy_name(legacy):
+    assert _eli_agent_text(f"Ask {legacy} now") == "Ask Eli Agent now"

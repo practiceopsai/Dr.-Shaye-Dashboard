@@ -8,8 +8,8 @@ from .config import Settings
 from .security import contains_phi
 
 
-class OrgoHermesClient:
-    """Durable bridge to Hermes: same production vault, retrieval, and run ledger."""
+class EliAgentClient:
+    """Durable bridge to Eli Agent: same production vault, retrieval, and run ledger."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -27,7 +27,7 @@ class OrgoHermesClient:
             response.raise_for_status()
             result = response.json()
         if result.get("exit_code") not in (None, 0):
-            raise RuntimeError(f"Hermes bridge exited {result.get('exit_code')}: {result.get('stderr', '')[-500:]}")
+            raise RuntimeError(f"Eli Agent bridge exited {result.get('exit_code')}: {result.get('stderr', '')[-500:]}")
         return result
 
     async def context(self) -> str:
@@ -58,7 +58,7 @@ for rel in direct:
 queries=[
     "What commitments, deadlines, waiting-on items, and active projects matter now?",
     "What are Omid's current daily priority rules and protected-time rules?",
-    "What current preferences and standing feedback has Omid given Hermes about how to prioritize and present his day?",
+    "What current preferences and standing feedback has Omid given Eli Agent about how to prioritize and present his day?",
     "What did the most recent daily briefing and recent workflow run results report, decide, or leave open?",
 ]
 def ask(q):
@@ -86,7 +86,7 @@ os.environ["DRSHAYE_AGENT"]="eli-dashboard"
 payload=json.loads({json.dumps(envelope)})
 marker=v/".run-active"
 if marker.exists():
-    raise SystemExit("Hermes run is active; dashboard write deferred")
+    raise SystemExit("Eli Agent run is active; dashboard write deferred")
 s=subprocess.run(["python","tools/run.py","start","--workflow",{workflow!r}],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=60)
 if s.returncode: raise SystemExit(s.stderr or s.stdout)
 result={{"type":"dashboard","summary":payload["summary"],"workflow":{workflow!r},"mode":"approved_ui_action","results":payload["details"],"checks":[],"anomalies":[],"errors_hit":[],"new_errors":[],"learnings":[],"memory_candidates":[],"approvals_requested":[],"external_actions":[],"deferred":[]}}
@@ -331,7 +331,7 @@ class ComposioMCPClient:
 
 
 async def integration_health(settings: Settings) -> dict[str, bool]:
-    orgo = OrgoHermesClient(settings)
+    orgo = EliAgentClient(settings)
     composio = ComposioMCPClient(settings)
 
     async def orgo_check() -> bool:
@@ -347,5 +347,5 @@ async def integration_health(settings: Settings) -> dict[str, bool]:
         except Exception:
             return False
 
-    hermes_ok, composio_ok = await asyncio.gather(orgo_check(), composio_check())
-    return {"hermes": hermes_ok, "composio": composio_ok, "anthropic": bool(settings.anthropic_api_key)}
+    eli_agent_ok, composio_ok = await asyncio.gather(orgo_check(), composio_check())
+    return {"eli_agent": eli_agent_ok, "composio": composio_ok, "anthropic": bool(settings.anthropic_api_key)}

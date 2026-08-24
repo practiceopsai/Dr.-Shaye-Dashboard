@@ -9,7 +9,7 @@ Lane = Literal["now", "protect", "delegate", "monitor"]
 
 class ActionSpec(BaseModel):
     label: str
-    kind: Literal["hermes_queue", "composio"] = "hermes_queue"
+    kind: Literal["eli_agent_queue", "composio"] = "eli_agent_queue"
     tool_name: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     account: str = "personal"
@@ -59,4 +59,3 @@ class ExecuteRequest(BaseModel):
 
 class VoiceRequest(BaseModel):
     transcript: str = Field(min_length=1, max_length=4000)
-
