@@ -7,6 +7,8 @@ Action-oriented daily command center for Dr. Omid Shaye. The application combine
 - `frontend/` — Next.js App Router UI.
 - `backend/` — FastAPI API, Anthropic priority synthesis, Orgo/Hermes bridge, personal-account Composio signals, approval ledger.
 - Hermes connection — the dashboard reads the same production vault and records feedback/approvals through its governed run lifecycle.
+- Priority alignment — every refresh reads Dr. Shaye's current preference files, latest morning brief, latest run log, and BM25 priority/feedback retrievals before synthesis.
+- Ownership routing — technology and troubleshooting are deterministically assigned to Fabio in the delegate/monitor lanes, never presented as Dr. Shaye's personal execution work.
 - External actions — only exact, allowlisted tool calls may execute; all others become approval packages for Hermes.
 
 ## Local development

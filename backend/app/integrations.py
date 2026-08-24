@@ -33,19 +33,48 @@ class OrgoHermesClient:
     async def context(self) -> str:
         code = r'''
 from pathlib import Path
-import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import subprocess,sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 v=Path(r"C:\data\DrShaye\vault")
 parts=[]
-for rel in ["CURRENT_STATUS.md", "daily-briefing/PLAYBOOK.md", "design/governance/approval-and-autonomy.md"]:
+direct=[
+    "CURRENT_STATUS.md",
+    "daily-briefing/PLAYBOOK.md",
+    "daily-briefing/LEARNINGS.md",
+    "design/governance/approval-and-autonomy.md",
+    "memory/preferences/daily-organization.md",
+    "memory/preferences/time-protection.md",
+    "memory/preferences/approval-posture.md",
+    "memory/preferences/notification-and-vault-updates.md",
+    "memory/preferences/communication-voice.md",
+]
+for folder in ["briefings/morning", "daily-briefing/logs"]:
+    candidates=sorted((v/folder).glob("*.md"), key=lambda p:p.stat().st_mtime, reverse=True)
+    if candidates: direct.append(str(candidates[0].relative_to(v)))
+for rel in direct:
     p=v/rel
-    if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:7000])
-for q in ["What commitments, deadlines, waiting-on items, and active projects matter now?", "What are Omid's current priority and protected-time rules?"]:
+    if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:2500])
+queries=[
+    "What commitments, deadlines, waiting-on items, and active projects matter now?",
+    "What are Omid's current daily priority rules and protected-time rules?",
+    "What current preferences and standing feedback has Omid given Hermes about how to prioritize and present his day?",
+    "What did the most recent daily briefing and recent workflow run results report, decide, or leave open?",
+]
+def ask(q):
     r=subprocess.run(["python", "tools/run.py", "ask", q, "--top", "4"], cwd=v, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    parts.append(f"\n--- retrieval: {q} ---\n"+r.stdout[:10000])
-print("".join(parts))
+    return q,r.stdout[:5000]
+answers={}
+with ThreadPoolExecutor(max_workers=4) as pool:
+    futures=[pool.submit(ask,q) for q in queries]
+    for future in as_completed(futures):
+        q,value=future.result(); answers[q]=value
+for q in queries:
+    parts.append(f"\n--- retrieval: {q} ---\n"+answers.get(q,""))
+print("".join(parts)[:44000])
 '''
-        result = await self.exec(code)
-        return result.get("stdout", "")[-28000:]
+        result = await self.exec(code, timeout=110)
+        return result.get("stdout", "")[:44000]
 
     async def record(self, workflow: str, summary: str, details: list[str]) -> None:
         envelope = json.dumps({"summary": summary, "details": details}, ensure_ascii=False)
