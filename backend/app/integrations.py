@@ -1,10 +1,12 @@
 import asyncio
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import httpx
 from .config import Settings
+from .models import CalendarItem
 from .security import contains_phi
 
 
@@ -218,7 +220,29 @@ class ComposioMCPClient:
         blocked = r"\b(patient|gastro|clinic|hospital|colonoscopy|endoscopy|biopsy|pathology|diagnos(?:is|ed)|prescription|medical record|mrn)\b"
         return bool(text.strip()) and not contains_phi(text) and not re.search(blocked, text, re.I)
 
-    async def personal_signals(self) -> str:
+    @staticmethod
+    def _calendar_item(event: dict[str, Any]) -> CalendarItem | None:
+        summary = str(event.get("summary") or "Busy").strip()[:180]
+        start = event.get("start") if isinstance(event.get("start"), dict) else {}
+        end = event.get("end") if isinstance(event.get("end"), dict) else {}
+        start_value = str(start.get("dateTime") or start.get("date") or "").strip()
+        if not start_value or not ComposioMCPClient._safe_signal(summary):
+            return None
+        end_value = str(end.get("dateTime") or end.get("date") or "").strip() or None
+        event_id = str(event.get("id") or "").strip()
+        if not event_id:
+            digest = hashlib.sha256(f"{summary}|{start_value}".encode()).hexdigest()[:20]
+            event_id = f"calendar-{digest}"
+        return CalendarItem(
+            id=event_id[:256],
+            title=summary,
+            start=start_value,
+            end=end_value,
+            all_day=bool(start.get("date") and not start.get("dateTime")),
+            source="Personal calendar",
+        )
+
+    async def personal_signals(self) -> tuple[str, list[CalendarItem]]:
         """Return compact personal-account metadata; never mailbox bodies or event descriptions."""
         gmail_account = self.settings.composio_personal_gmail_account
         calendar_account = self.settings.composio_personal_calendar_account
@@ -244,11 +268,11 @@ class ComposioMCPClient:
                 "arguments": {
                     "calendarId": "primary",
                     "timeMin": now.isoformat(),
-                    "timeMax": (now + timedelta(days=7)).isoformat(),
+                    "timeMax": (now + timedelta(days=30)).isoformat(),
                     "timeZone": self.settings.dashboard_timezone,
                     "singleEvents": True,
                     "orderBy": "startTime",
-                    "maxResults": 25,
+                    "maxResults": 100,
                     "showDeleted": False,
                 },
                 "account": calendar_account,
@@ -268,6 +292,7 @@ class ComposioMCPClient:
         batches = await asyncio.gather(*(read_one(tool) for tool in tools), return_exceptions=True)
         results = [item for batch in batches if isinstance(batch, list) for item in batch]
         lines: list[str] = []
+        calendar_items: list[CalendarItem] = []
         for item in results:
             response = item.get("response", {})
             if not response.get("successful"):
@@ -282,13 +307,16 @@ class ComposioMCPClient:
                     if self._safe_signal(signal):
                         lines.append(f"INBOX | {message.get('messageTimestamp') or 'time unknown'} | {signal}")
             elif item.get("tool_slug") == "GOOGLECALENDAR_EVENTS_LIST":
-                for event in (data.get("items") or [])[:20]:
+                for event in (data.get("items") or [])[:100]:
                     summary = str(event.get("summary") or "Busy").strip()[:180]
                     start = event.get("start") or {}
                     when = start.get("dateTime") or start.get("date") or "time unknown"
                     if self._safe_signal(summary):
-                        lines.append(f"CALENDAR | {when} | {summary}")
-        return "\n".join(lines[:30])
+                        if len([line for line in lines if line.startswith("CALENDAR")]) < 20:
+                            lines.append(f"CALENDAR | {when} | {summary}")
+                        if calendar_item := self._calendar_item(event):
+                            calendar_items.append(calendar_item)
+        return "\n".join(lines[:30]), calendar_items[:100]
 
     @staticmethod
     def validate_write(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

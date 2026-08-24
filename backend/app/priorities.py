@@ -3,10 +3,11 @@ import logging
 import re
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from anthropic import AsyncAnthropic, BadRequestError
 from .config import Settings
 from .integrations import ComposioMCPClient, EliAgentClient, integration_health
-from .models import ActionSpec, DashboardPayload, PriorityCard
+from .models import ActionSpec, CalendarItem, DashboardPayload, PriorityCard
 
 
 SYSTEM = """You are Eli, Dr. Omid Shaye's action-oriented Chief of Staff dashboard.
@@ -21,6 +22,7 @@ Priority evidence order: (1) Dr. Shaye's latest explicit preferences and feedbac
 Only preferences explicitly attributed to Omid or Dr. Shaye control his priority ranking. Fabio/operator preferences may govern technical ownership or system presentation, but must never be treated as Omid's personal priorities.
 When feasible, include at least one P3 protected outcome serving family, Torah, health, healing, teaching, relationship repair, tzedakah, or community service so reactive urgency does not consume all three high-value slots.
 Every card needs a concrete outcome and action. Generic external actions must use kind=eli_agent_queue. Never invent a Composio tool name.
+When a deadline is known, return it as ISO 8601 with its timezone offset. Return null when no deadline is known; never return placeholders such as 'none stated' or 'unspecified'.
 Technology, software, integration, deployment, outage, debugging, troubleshooting, and IT items belong to Fabio, not Dr. Shaye. Put them in the delegate or monitor lane with an action that asks Eli Agent to assign and notify Fabio; never frame them as Dr. Shaye's personal action.
 Omit routine technical noise entirely. Show a Fabio-owned technical item only when it materially blocks a current priority or needs Dr. Shaye's decision.
 Schema: {greeting:string, focus:string, cards:[{id,priority,lane,category,title,context,consequence,deadline,source,mission_alignment,action:{label,kind:'eli_agent_queue',tool_name:null,arguments:{},account:'personal',recipients:[],reversible:true}}]}"""
@@ -215,6 +217,36 @@ def _enforce_priority_policy(cards: list[PriorityCard]) -> list[PriorityCard]:
     return selected
 
 
+def _priority_calendar_item(card: PriorityCard, timezone_name: str) -> CalendarItem | None:
+    value = str(card.deadline or "").strip()
+    if not value or value.lower() in {"none", "none stated", "unspecified", "unknown", "n/a"}:
+        return None
+    all_day = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
+    normalized = value.replace("Z", "+00:00")
+    abbreviation = re.search(r"\s+(PDT|PST)$", normalized, re.I)
+    if abbreviation:
+        normalized = normalized[:abbreviation.start()]
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if not all_day and parsed.tzinfo is None:
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
+        except Exception:
+            return None
+    start = value if all_day else parsed.isoformat()
+    return CalendarItem(
+        id=f"priority-{card.id}",
+        title=card.title,
+        start=start,
+        all_day=all_day,
+        source=card.source,
+        kind="priority",
+        priority_id=card.id,
+    )
+
+
 def fallback_cards() -> list[PriorityCard]:
     return [
         PriorityCard(id="refresh-connections", priority="P2", lane="now", category="System", title="Confirm today's operating picture", context="Live priority synthesis is temporarily unavailable. Refresh the Eli Agent and connected services before acting on stale context.", consequence="The dashboard may miss a new deadline or commitment.", source="system health", mission_alignment="unknown", action=ActionSpec(label="Ask Eli Agent to refresh the daily brief")),
@@ -227,6 +259,7 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
     health["preference_sync"] = False
     warnings: list[str] = []
     cards: list[PriorityCard]
+    calendar_items: list[CalendarItem] = []
     live = False
     try:
         context, signal_result = await asyncio.gather(
@@ -243,7 +276,11 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
             warnings.append(f"Personal inbox/calendar signals unavailable: {type(signal_result).__name__}")
             signals = "No fresh personal inbox or calendar signals were available."
         else:
-            signals = signal_result or "No relevant personal inbox or calendar signals were found."
+            if isinstance(signal_result, tuple):
+                signals, calendar_items = signal_result
+            else:
+                signals = str(signal_result or "")
+            signals = signals or "No relevant personal inbox or calendar signals were found."
         client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         user_prompt = f"Today is {datetime.now().astimezone().isoformat()}. Build the dashboard from the sources below. Vault material may be stale. Personal signals are metadata only and may be incomplete. Cite either the vault file/heading or personal inbox/calendar in source.\n\n--- ELI AGENT CONTEXT ---\n{context}\n\n--- PERSONAL SIGNALS (NO MESSAGE BODIES OR EVENT DESCRIPTIONS) ---\n{signals}"
         parsed = await _synthesize(client, settings.anthropic_model, user_prompt)
@@ -269,4 +306,7 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
         warnings.append("Composio is offline; external actions will remain queued.")
     if not health.get("eli_agent"):
         warnings.append("Eli Agent is offline; preference and action write-back is unavailable.")
-    return DashboardPayload(generated_at=datetime.now().astimezone(), live=live, greeting=greeting, focus=focus, cards=cards, admin_count=sum(c.priority == "P4" for c in cards), integrations=health, warnings=warnings)
+    calendar_items.extend(
+        item for card in cards if (item := _priority_calendar_item(card, settings.dashboard_timezone))
+    )
+    return DashboardPayload(generated_at=datetime.now().astimezone(), live=live, greeting=greeting, focus=focus, cards=cards, calendar_items=calendar_items, admin_count=sum(c.priority == "P4" for c in cards), integrations=health, warnings=warnings)

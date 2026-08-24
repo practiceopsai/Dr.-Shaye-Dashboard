@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, ArrowRight, CalendarDays, CheckCircle2, CircleAlert, Command, LockKeyhole, RefreshCw } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
 import FeedbackPanel from "@/components/FeedbackPanel";
+import ScheduleCalendar from "@/components/ScheduleCalendar";
 import SystemStatus from "@/components/SystemStatus";
 import ViewNav from "@/components/ViewNav";
 import VoiceCommand from "@/components/VoiceCommand";
@@ -128,7 +129,9 @@ export default function Home() {
           <div className="loading-grid">{[1, 2, 3].map(item => <div key={item} />)}</div>
         ) : (
           <section id={`view-${activeView}`} role="tabpanel" aria-label={viewLabels[activeView]}>
-            {activeView === "today" ? (
+            {activeView === "schedule" ? (
+              <ScheduleCalendar items={data?.calendar_items || []} />
+            ) : activeView === "today" ? (
               <div className="matrix">
                 {lanes.map(lane => (
                   <section className={`lane lane-${lane.key}`} id={`lane-${lane.key}`} key={lane.key} aria-labelledby={`lane-${lane.key}-title`}>

@@ -11,6 +11,7 @@ from app.priorities import (
     _is_fabio_item,
     _normalize_card,
     _parse_message,
+    _priority_calendar_item,
     _rag_sync_ok,
     _synthesize,
     _validate_dashboard_shape,
@@ -234,6 +235,28 @@ def test_daily_selection_rule_caps_high_value_and_admin_and_omits_p5():
 
     assert [card.priority for card in selected] == ["P0", "P1", "P2", "P4", "P4", "P4"]
     assert all(card.id != "someday" for card in selected)
+
+
+def test_iso_priority_deadline_becomes_a_calendar_item():
+    card = PriorityCard.model_validate(_normalize_card(_card(
+        id="deadline-1",
+        priority="P2",
+        deadline="2026-08-25T07:30:00-07:00",
+        title="Resolve the morning conflict",
+    )))
+
+    item = _priority_calendar_item(card, "America/Los_Angeles")
+
+    assert item is not None
+    assert item.kind == "priority"
+    assert item.priority_id == "deadline-1"
+    assert item.start == "2026-08-25T07:30:00-07:00"
+
+
+@pytest.mark.parametrize("deadline", [None, "none stated", "Tomorrow morning", "unspecified"])
+def test_unstructured_or_missing_priority_deadline_is_not_invented(deadline):
+    card = PriorityCard.model_validate(_normalize_card(_card(deadline=deadline)))
+    assert _priority_calendar_item(card, "America/Los_Angeles") is None
 
 
 def test_lowercase_it_pronoun_does_not_trigger_routing():

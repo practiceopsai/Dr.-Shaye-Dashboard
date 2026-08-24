@@ -1,6 +1,7 @@
 export type Lane = "now" | "protect" | "delegate" | "monitor";
 export type Card = { id:string; priority:string; lane:Lane; category:string; title:string; context:string; consequence:string; deadline?:string|null; source:string; mission_alignment:string; action:{label:string;kind:string;tool_name?:string|null;arguments:Record<string,unknown>;account:string;recipients:string[];reversible:boolean} };
-export type Dashboard = { generated_at:string; live:boolean; greeting:string; focus:string; cards:Card[]; admin_count:number; integrations:Record<string,boolean|string>; warnings:string[] };
+export type CalendarItem = { id:string; title:string; start:string; end?:string|null; all_day:boolean; source:string; kind:"calendar"|"priority"; priority_id?:string|null };
+export type Dashboard = { generated_at:string; live:boolean; greeting:string; focus:string; cards:Card[]; calendar_items?:CalendarItem[]; admin_count:number; integrations:Record<string,boolean|string>; warnings:string[] };
 export type FeedbackCategory = "priority_correction" | "dashboard_change" | "positive_reinforcement";
 export type FeedbackRequest = { category:FeedbackCategory; feedback:string; item_id?:string; disposition?:"dismiss"|"not_relevant"|"modify"|"complete" };
 export type FeedbackResponse = { feedback_id:string; status:"recorded"|"queued"; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean; detail:string };

@@ -31,12 +31,24 @@ class PriorityCard(BaseModel):
     action: ActionSpec
 
 
+class CalendarItem(BaseModel):
+    id: str
+    title: str
+    start: str
+    end: str | None = None
+    all_day: bool = False
+    source: str
+    kind: Literal["calendar", "priority"] = "calendar"
+    priority_id: str | None = None
+
+
 class DashboardPayload(BaseModel):
     generated_at: datetime
     live: bool
     greeting: str
     focus: str
     cards: list[PriorityCard]
+    calendar_items: list[CalendarItem] = Field(default_factory=list)
     admin_count: int = 0
     integrations: dict[str, bool | str]
     warnings: list[str] = Field(default_factory=list)
