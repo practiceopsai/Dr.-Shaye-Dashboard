@@ -9,6 +9,7 @@ from app.priorities import (
     _extract_json,
     _eli_agent_text,
     _is_fabio_item,
+    _link_calendar_priorities,
     _normalize_card,
     _parse_message,
     _priority_calendar_item,
@@ -16,7 +17,7 @@ from app.priorities import (
     _synthesize,
     _validate_dashboard_shape,
 )
-from app.models import PriorityCard
+from app.models import CalendarItem, PriorityCard
 
 
 # --- JSON recovery ---------------------------------------------------------
@@ -251,6 +252,23 @@ def test_iso_priority_deadline_becomes_a_calendar_item():
     assert item.kind == "priority"
     assert item.priority_id == "deadline-1"
     assert item.start == "2026-08-25T07:30:00-07:00"
+
+
+def test_exact_future_calendar_event_links_to_its_early_action():
+    card = PriorityCard.model_validate(_normalize_card(_card(
+        id="prepare-1",
+        priority="P2",
+        calendar_event_id="event-42",
+    )))
+    items = [
+        CalendarItem(id="event-42", title="Future commitment", start="2026-09-12T10:00:00-07:00", source="Personal calendar"),
+        CalendarItem(id="event-other", title="Unrelated event", start="2026-09-13T10:00:00-07:00", source="Personal calendar"),
+    ]
+
+    linked = _link_calendar_priorities(items, [card])
+
+    assert linked[0].priority_id == "prepare-1"
+    assert linked[1].priority_id is None
 
 
 @pytest.mark.parametrize("deadline", [None, "none stated", "Tomorrow morning", "unspecified"])

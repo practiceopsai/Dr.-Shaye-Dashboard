@@ -26,6 +26,7 @@ class PriorityCard(BaseModel):
     context: str
     consequence: str
     deadline: str | None = None
+    calendar_event_id: str | None = Field(default=None, max_length=256)
     source: str
     mission_alignment: Literal["aligned", "mixed", "tension", "unknown"] = "unknown"
     action: ActionSpec

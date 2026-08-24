@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, Clock3, Expand, X } from "lucide-react";
-import { CalendarItem } from "@/lib/api";
+import ActionCard from "@/components/ActionCard";
+import { CalendarItem, Card } from "@/lib/api";
 
 const TIME_ZONE = "America/Los_Angeles";
 
@@ -88,7 +89,7 @@ function CalendarGrid({ items, days, onSelect }: { items: CalendarItem[]; days: 
   );
 }
 
-function ItemDetail({ item, onClose }: { item: CalendarItem; onClose: () => void }) {
+function ItemDetail({ item, card, onClose, onChanged }: { item: CalendarItem; card?: Card; onClose: () => void; onChanged: () => void }) {
   const dateOnly = item.all_day && /^(\d{4})-(\d{2})-(\d{2})$/.exec(item.start);
   const start = dateOnly
     ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]), 12)
@@ -105,19 +106,26 @@ function ItemDetail({ item, onClose }: { item: CalendarItem; onClose: () => void
     ? new Intl.DateTimeFormat("en-US", { timeZone: TIME_ZONE, hour: "numeric", minute: "2-digit" }).format(end)
     : "";
   return (
-    <aside className="calendar-detail" aria-label="Selected dated item">
+    <aside className={`calendar-detail ${card ? "calendar-detail-actionable" : ""}`} aria-label="Selected dated item">
       <button type="button" onClick={onClose} aria-label="Close item details"><X size={15} /></button>
-      <p className="kicker">{item.kind === "priority" ? "Priority deadline" : "Calendar item"}</p>
+      <p className="kicker">{card ? "Early action available" : item.kind === "priority" ? "Priority deadline" : "Calendar item"}</p>
       <h3>{item.title}</h3>
       <p><Clock3 size={14} />{item.all_day ? `${date} · All day` : `${date}${endTime ? ` – ${endTime}` : ""}`}</p>
       <small>Source: {item.source}</small>
+      {card && (
+        <div className="calendar-action">
+          <div className="calendar-action-heading"><span>Prepare before this date</span><p>This future commitment needs an earlier decision or action.</p></div>
+          <ActionCard card={card} onChanged={onChanged} />
+        </div>
+      )}
     </aside>
   );
 }
 
-export default function ScheduleCalendar({ items }: { items: CalendarItem[] }) {
+export default function ScheduleCalendar({ items, cards, onChanged }: { items: CalendarItem[]; cards: Card[]; onChanged: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState<CalendarItem | null>(null);
+  const selectedCard = selected?.priority_id ? cards.find(card => card.id === selected.priority_id) : undefined;
 
   useEffect(() => {
     if (!expanded && !selected) return;
@@ -139,7 +147,7 @@ export default function ScheduleCalendar({ items }: { items: CalendarItem[] }) {
       <div className="calendar-scroll"><CalendarGrid items={items} days={7} onSelect={setSelected} /></div>
       {!items.length && <div className="calendar-empty"><CalendarDays size={20} /><span>No dated items are available from the connected calendar.</span></div>}
 
-      {selected && !expanded && <div className="calendar-detail-overlay" role="dialog" aria-modal="true" aria-label="Dated item details"><ItemDetail item={selected} onClose={() => setSelected(null)} /></div>}
+      {selected && !expanded && <div className="calendar-detail-overlay" role="dialog" aria-modal="true" aria-label="Dated item details"><ItemDetail item={selected} card={selectedCard} onClose={() => setSelected(null)} onChanged={onChanged} /></div>}
 
       {expanded && (
         <div className="calendar-overlay" role="dialog" aria-modal="true" aria-labelledby="full-calendar-title">
@@ -148,7 +156,7 @@ export default function ScheduleCalendar({ items }: { items: CalendarItem[] }) {
               <div><p className="kicker">Full calendar</p><h2 id="full-calendar-title">Next 30 days</h2><p>Select any dated item to see its source and complete timing.</p></div>
               <button type="button" className="calendar-close" onClick={() => { setExpanded(false); setSelected(null); }}><X size={16} />Close</button>
             </div>
-            {selected && <ItemDetail item={selected} onClose={() => setSelected(null)} />}
+            {selected && <ItemDetail item={selected} card={selectedCard} onClose={() => setSelected(null)} onChanged={onChanged} />}
             <div className="calendar-scroll calendar-scroll-full"><CalendarGrid items={items} days={30} onSelect={setSelected} /></div>
           </section>
         </div>

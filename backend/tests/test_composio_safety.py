@@ -40,6 +40,7 @@ def test_calendar_event_becomes_safe_structured_metadata():
     assert item.title == "Family dinner"
     assert item.start == "2026-08-24T18:30:00-07:00"
     assert item.end == "2026-08-24T20:00:00-07:00"
+    assert item.id == "event-1"
     assert "private description" not in item.model_dump_json()
 
 

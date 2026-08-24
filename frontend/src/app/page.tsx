@@ -130,7 +130,7 @@ export default function Home() {
         ) : (
           <section id={`view-${activeView}`} role="tabpanel" aria-label={viewLabels[activeView]}>
             {activeView === "schedule" ? (
-              <ScheduleCalendar items={data?.calendar_items || []} />
+              <ScheduleCalendar items={data?.calendar_items || []} cards={data?.cards || []} onChanged={() => load(true)} />
             ) : activeView === "today" ? (
               <div className="matrix">
                 {lanes.map(lane => (

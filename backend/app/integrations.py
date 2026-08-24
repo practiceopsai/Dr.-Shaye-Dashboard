@@ -312,11 +312,11 @@ class ComposioMCPClient:
                     start = event.get("start") or {}
                     when = start.get("dateTime") or start.get("date") or "time unknown"
                     if self._safe_signal(summary):
-                        if len([line for line in lines if line.startswith("CALENDAR")]) < 20:
-                            lines.append(f"CALENDAR | {when} | {summary}")
                         if calendar_item := self._calendar_item(event):
                             calendar_items.append(calendar_item)
-        return "\n".join(lines[:30]), calendar_items[:100]
+                            signal_title = re.sub(r"\s+", " ", summary)
+                            lines.append(f"CALENDAR | event_id={calendar_item.id} | start={when} | title={signal_title}")
+        return "\n".join(lines[:120]), calendar_items[:100]
 
     @staticmethod
     def validate_write(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

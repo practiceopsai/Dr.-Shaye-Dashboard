@@ -23,9 +23,10 @@ Only preferences explicitly attributed to Omid or Dr. Shaye control his priority
 When feasible, include at least one P3 protected outcome serving family, Torah, health, healing, teaching, relationship repair, tzedakah, or community service so reactive urgency does not consume all three high-value slots.
 Every card needs a concrete outcome and action. Generic external actions must use kind=eli_agent_queue. Never invent a Composio tool name.
 When a deadline is known, return it as ISO 8601 with its timezone offset. Return null when no deadline is known; never return placeholders such as 'none stated' or 'unspecified'.
+Review the entire 30-day calendar window on every brief. A future event is not urgent merely because it exists. When preparation, a decision, delegation, or approval must begin now or soon to protect a future commitment, include that preparatory work in today's cards at its true priority and set calendar_event_id to the exact event_id from the CALENDAR signal. Use deadline for the earliest useful action checkpoint, not merely the event time. Leave calendar_event_id null for cards not grounded in a calendar event. This linkage lets Omid open the future event on its actual date and approve the early action.
 Technology, software, integration, deployment, outage, debugging, troubleshooting, and IT items belong to Fabio, not Dr. Shaye. Put them in the delegate or monitor lane with an action that asks Eli Agent to assign and notify Fabio; never frame them as Dr. Shaye's personal action.
 Omit routine technical noise entirely. Show a Fabio-owned technical item only when it materially blocks a current priority or needs Dr. Shaye's decision.
-Schema: {greeting:string, focus:string, cards:[{id,priority,lane,category,title,context,consequence,deadline,source,mission_alignment,action:{label,kind:'eli_agent_queue',tool_name:null,arguments:{},account:'personal',recipients:[],reversible:true}}]}"""
+Schema: {greeting:string, focus:string, cards:[{id,priority,lane,category,title,context,consequence,deadline,calendar_event_id,source,mission_alignment,action:{label,kind:'eli_agent_queue',tool_name:null,arguments:{},account:'personal',recipients:[],reversible:true}}]}"""
 
 logger = logging.getLogger("eli.priorities")
 
@@ -247,6 +248,19 @@ def _priority_calendar_item(card: PriorityCard, timezone_name: str) -> CalendarI
     )
 
 
+def _link_calendar_priorities(items: list[CalendarItem], cards: list[PriorityCard]) -> list[CalendarItem]:
+    """Attach actionable priority cards only to exact calendar event IDs."""
+    card_ids = {
+        card.calendar_event_id: card.id
+        for card in cards
+        if card.calendar_event_id
+    }
+    return [
+        item.model_copy(update={"priority_id": card_ids[item.id]}) if item.id in card_ids else item
+        for item in items
+    ]
+
+
 def fallback_cards() -> list[PriorityCard]:
     return [
         PriorityCard(id="refresh-connections", priority="P2", lane="now", category="System", title="Confirm today's operating picture", context="Live priority synthesis is temporarily unavailable. Refresh the Eli Agent and connected services before acting on stale context.", consequence="The dashboard may miss a new deadline or commitment.", source="system health", mission_alignment="unknown", action=ActionSpec(label="Ask Eli Agent to refresh the daily brief")),
@@ -306,6 +320,7 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
         warnings.append("Composio is offline; external actions will remain queued.")
     if not health.get("eli_agent"):
         warnings.append("Eli Agent is offline; preference and action write-back is unavailable.")
+    calendar_items = _link_calendar_priorities(calendar_items, cards)
     calendar_items.extend(
         item for card in cards if (item := _priority_calendar_item(card, settings.dashboard_timezone))
     )
