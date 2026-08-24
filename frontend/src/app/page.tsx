@@ -39,6 +39,15 @@ export default function Home() {
     if (savedToken) load(false);
   }, []);
 
+  useEffect(() => {
+    if (!ready) return;
+    const sync = () => {
+      if (document.visibilityState === "visible") load(true);
+    };
+    const interval = window.setInterval(sync, 5 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [ready]);
+
   async function load(refresh = true) {
     setLoading(true);
     setError("");
