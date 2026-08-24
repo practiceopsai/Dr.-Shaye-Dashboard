@@ -109,7 +109,7 @@ export default function Home() {
             <h1>{data?.greeting || "Good morning, Dr. Shaye."}</h1>
             <p className="focus">{data?.focus || "Loading today's operating picture…"}</p>
           </div>
-          <div className="header-actions"><VoiceCommand /><button className="refresh" onClick={() => load(true)} disabled={loading} aria-label="Refresh command center"><RefreshCw size={16} className={loading ? "spin" : ""} /></button></div>
+          <div className="header-actions"><VoiceCommand onChanged={() => load(true)} /><button className="refresh" onClick={() => load(true)} disabled={loading} aria-label="Refresh command center"><RefreshCw size={16} className={loading ? "spin" : ""} /></button></div>
         </header>
 
         <ViewNav current={activeView} onChange={setActiveView} className="mobile-nav" idPrefix="mobile" />

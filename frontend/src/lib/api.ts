@@ -5,6 +5,7 @@ export type Dashboard = { generated_at:string; live:boolean; greeting:string; fo
 export type FeedbackCategory = "priority_correction" | "dashboard_change" | "positive_reinforcement";
 export type FeedbackRequest = { category:FeedbackCategory; feedback:string; item_id?:string; disposition?:"dismiss"|"not_relevant"|"modify"|"complete" };
 export type FeedbackResponse = { feedback_id:string; status:"recorded"|"queued"; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean; detail:string };
+export type VoiceResponse = { command_id:string; status:"recorded"|"queued"; intent:"priority_feedback"|"dashboard_change"|"action_request"; message:string; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean };
 
 const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 function token(){ return typeof window === "undefined" ? "" : sessionStorage.getItem("eli_token") || ""; }
@@ -19,5 +20,5 @@ export const api={
   retryFeedback:(feedback_id:string)=>call<FeedbackResponse>(`/api/feedback/${encodeURIComponent(feedback_id)}/retry`,{method:"POST"}),
   approve:(item:Card)=>call<{approval_id:string;payload_hash:string}>("/api/approvals",{method:"POST",body:JSON.stringify({item})}),
   execute:(approval_id:string,payload_hash:string)=>call<{status:string}>("/api/execute",{method:"POST",body:JSON.stringify({approval_id,payload_hash})}),
-  voice:(transcript:string)=>call<{message:string}>("/api/voice",{method:"POST",body:JSON.stringify({transcript})}),
+  voice:(transcript:string)=>call<VoiceResponse>("/api/voice",{method:"POST",body:JSON.stringify({transcript})}),
 };

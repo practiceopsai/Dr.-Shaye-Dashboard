@@ -1,4 +1,5 @@
 import asyncio
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -6,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .integrations import ComposioMCPClient, EliAgentClient, integration_health
-from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceRequest
+from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceIntent, VoiceRequest, VoiceResponse
 from .priorities import build_dashboard
 from .security import contains_phi, payload_hash, require_auth
 
@@ -18,6 +19,16 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credent
 _cache: dict[str, Any] = {}
 _approvals: dict[str, dict[str, Any]] = {}
 _pending_feedback: dict[str, tuple[FeedbackRequest, str]] = {}
+_pending_voice: dict[str, tuple[str, VoiceIntent]] = {}
+
+_PRIORITY_VOICE_TERMS = re.compile(
+    r"\b(priority|priorities|important|urgent|rank|ranking|daily brief|not relevant|not useful|useful|prefer|preference|show less|show more|protect time)\b",
+    re.I,
+)
+_DASHBOARD_VOICE_TERMS = re.compile(
+    r"\b(dashboard|command center|widget|calendar|schedule|layout|display|screen|section|button|interface|ui)\b",
+    re.I,
+)
 
 
 def _feedback_destination(req: FeedbackRequest) -> tuple[str, str]:
@@ -77,6 +88,58 @@ async def _flush_pending_feedback(limit: int = 1) -> None:
             break
 
 
+def _voice_intent(transcript: str) -> VoiceIntent:
+    if _PRIORITY_VOICE_TERMS.search(transcript):
+        return "priority_feedback"
+    if _DASHBOARD_VOICE_TERMS.search(transcript):
+        return "dashboard_change"
+    return "action_request"
+
+
+async def _deliver_voice(command_id: str, transcript: str, intent: VoiceIntent) -> bool:
+    if intent == "priority_feedback":
+        workflow = "daily-briefing"
+        summary = "Priority guidance received through Talk to Eli"
+        memory_candidates = [f"Candidate priority preference reported directly by Dr. Shaye: {transcript}"]
+    elif intent == "dashboard_change":
+        workflow = "commitment-capture"
+        summary = "Dashboard improvement requested through Talk to Eli"
+        memory_candidates = []
+    else:
+        workflow = "commitment-capture"
+        summary = "Action requested through Talk to Eli"
+        memory_candidates = []
+    detail = f"Talk to Eli command {command_id} | intent: {intent} | Dr. Shaye said: {transcript}"
+    try:
+        await EliAgentClient(settings).record(
+            workflow,
+            summary,
+            [detail],
+            memory_candidates=memory_candidates,
+            mode="user_requested_unapproved",
+        )
+    except Exception:
+        return False
+    _pending_voice.pop(command_id, None)
+    return True
+
+
+async def _flush_pending_voice(limit: int = 1) -> None:
+    for command_id, (transcript, intent) in list(_pending_voice.items())[:limit]:
+        if not await _deliver_voice(command_id, transcript, intent):
+            break
+
+
+def _voice_reply(intent: VoiceIntent, recorded: bool) -> str:
+    if not recorded:
+        return "I heard you. Your request is safely queued and I will retry it when the command center refreshes."
+    if intent == "priority_feedback":
+        return "I recorded that as priority guidance. I will use it when rebuilding your daily brief."
+    if intent == "dashboard_change":
+        return "I recorded that as a tracked dashboard improvement and sent it to Eli for implementation."
+    return "I captured that action request with Eli. Any external action will still require your exact approval before it runs."
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "eli-api", "time": datetime.now(timezone.utc).isoformat()}
@@ -89,6 +152,7 @@ async def status():
         "integrations": await integration_health(settings),
         "live_actions_enabled": settings.live_actions_enabled,
         "pending_feedback": len(_pending_feedback),
+        "pending_voice": len(_pending_voice),
     }
 
 
@@ -96,6 +160,8 @@ async def status():
 async def dashboard(refresh: bool = False) -> DashboardPayload:
     if _pending_feedback:
         await _flush_pending_feedback()
+    if _pending_voice:
+        await _flush_pending_voice()
     cached = _cache.get("dashboard")
     if cached and not refresh and datetime.now(timezone.utc) - cached[0] < timedelta(minutes=10):
         return cached[1]
@@ -207,8 +273,22 @@ async def execute(req: ExecuteRequest):
     return {"status": "executed", "approval_hash": approval["hash"], "result": result, "eli_agent_writeback": writeback}
 
 
-@app.post("/api/voice", dependencies=[Depends(require_auth)])
-async def voice(req: VoiceRequest):
+@app.post("/api/voice", response_model=VoiceResponse, dependencies=[Depends(require_auth)])
+async def voice(req: VoiceRequest) -> VoiceResponse:
     if contains_phi(req.transcript):
         raise HTTPException(422, "Voice command may contain clinical or patient-identifiable content")
-    return {"status": "parsed", "message": "Voice transcript captured. Confirm actions individually before execution.", "transcript": req.transcript}
+    transcript = req.transcript.strip()
+    intent = _voice_intent(transcript)
+    command_id = f"voice_{secrets.token_hex(8)}"
+    _pending_voice[command_id] = (transcript, intent)
+    recorded = await _deliver_voice(command_id, transcript, intent)
+    _cache.pop("dashboard", None)
+    return VoiceResponse(
+        command_id=command_id,
+        status="recorded" if recorded else "queued",
+        intent=intent,
+        message=_voice_reply(intent, recorded),
+        eli_agent_writeback=recorded,
+        retriable=not recorded,
+        next_brief_refresh=True,
+    )

@@ -100,7 +100,10 @@ print("".join(parts)[:52000])
         *,
         learnings: list[str] | None = None,
         memory_candidates: list[str] | None = None,
+        mode: str = "approved_ui_action",
     ) -> None:
+        if mode not in {"approved_ui_action", "user_requested_unapproved"}:
+            raise ValueError("Unsupported Eli Agent record mode")
         envelope = json.dumps(
             {
                 "summary": summary,
@@ -121,7 +124,7 @@ if marker.exists():
     raise SystemExit("Eli Agent run is active; dashboard write deferred")
 s=subprocess.run(["python","tools/run.py","start","--workflow",{workflow!r}],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=60)
 if s.returncode: raise SystemExit(s.stderr or s.stdout)
-result={{"type":"dashboard","summary":payload["summary"],"workflow":{workflow!r},"mode":"approved_ui_action","results":payload["details"],"checks":[],"anomalies":[],"errors_hit":[],"new_errors":[],"learnings":payload["learnings"],"memory_candidates":payload["memory_candidates"],"approvals_requested":[],"external_actions":[],"deferred":[]}}
+result={{"type":"dashboard","summary":payload["summary"],"workflow":{workflow!r},"mode":{mode!r},"results":payload["details"],"checks":[],"anomalies":[],"errors_hit":[],"new_errors":[],"learnings":payload["learnings"],"memory_candidates":payload["memory_candidates"],"approvals_requested":[],"external_actions":[],"deferred":[]}}
 p=v/"result-dashboard.json"; p.write_text(json.dumps(result,indent=2),encoding="utf-8")
 f=subprocess.run(["python","tools/run.py","finish","--workflow",{workflow!r},"--json",str(p)],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=180)
 try: p.unlink()

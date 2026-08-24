@@ -92,3 +92,16 @@ class ExecuteRequest(BaseModel):
 
 class VoiceRequest(BaseModel):
     transcript: str = Field(min_length=1, max_length=4000)
+
+
+VoiceIntent = Literal["priority_feedback", "dashboard_change", "action_request"]
+
+
+class VoiceResponse(BaseModel):
+    command_id: str
+    status: Literal["recorded", "queued"]
+    intent: VoiceIntent
+    message: str
+    eli_agent_writeback: bool
+    retriable: bool
+    next_brief_refresh: bool
