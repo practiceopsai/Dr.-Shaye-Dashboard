@@ -28,6 +28,17 @@ jobs:
           node-version: "24"
       - name: Install Railway CLI
         run: npm install --global @railway/cli
+      - name: Configure backend browser origin
+        if: matrix.service == 'backend'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: >-
+          railway variable set
+          ALLOWED_ORIGINS=https://eli-commandcenter.up.railway.app
+          --skip-deploys
+          --project 3f61b78e-9f6d-45c4-ad89-91ded7851330
+          --environment production
+          --service backend
       - name: Deploy service
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
