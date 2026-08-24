@@ -56,4 +56,53 @@ describe("ActionCard", () => {
     });
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
+
+  it("sends positive reinforcement when the action is marked useful and blocks a second submission", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.feedback).mockResolvedValue({ feedback_id: "feedback_2", status: "recorded", eli_agent_writeback: true, retriable: false, next_brief_refresh: false, detail: "Reinforced" });
+    render(<ActionCard card={card} onChanged={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+
+    expect(api.feedback).toHaveBeenCalledWith({
+      category: "positive_reinforcement",
+      item_id: "priority-1",
+      feedback: "The recommended action on this item was useful; reinforce similar recommendations.",
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(/recorded/i);
+    expect(screen.getByRole("button", { name: "Useful" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Not useful" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    expect(api.feedback).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a modify priority correction when the action is marked not useful", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.feedback).mockResolvedValue({ feedback_id: "feedback_3", status: "queued", eli_agent_writeback: false, retriable: true, next_brief_refresh: false, detail: "Safely queued" });
+    render(<ActionCard card={card} onChanged={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: "Not useful" }));
+
+    expect(api.feedback).toHaveBeenCalledWith({
+      category: "priority_correction",
+      item_id: "priority-1",
+      disposition: "modify",
+      feedback: "The recommended action on this item was not useful; reconsider this kind of recommendation.",
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(/queued/i);
+  });
+
+  it("shows an error and allows retrying when the usefulness signal fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.feedback).mockRejectedValueOnce(new Error("Feedback service unavailable"));
+    vi.mocked(api.feedback).mockResolvedValueOnce({ feedback_id: "feedback_4", status: "recorded", eli_agent_writeback: true, retriable: false, next_brief_refresh: false, detail: "Recorded" });
+    render(<ActionCard card={card} onChanged={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Feedback service unavailable");
+
+    await user.click(screen.getByRole("button", { name: "Useful" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(/recorded/i);
+    expect(api.feedback).toHaveBeenCalledTimes(2);
+  });
 });

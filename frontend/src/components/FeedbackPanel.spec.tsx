@@ -15,11 +15,41 @@ const card: Card = {
   action: { label: "Prepare the decision", kind: "eli_agent_queue", arguments: {}, account: "personal", recipients: [], reversible: true },
 };
 
+async function openWidget(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /teach eli what matters/i }));
+}
+
 describe("FeedbackPanel", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("renders all feedback categories and disables an empty submission", () => {
+  it("starts closed as a small widget with an accessible toggle", () => {
     render(<FeedbackPanel cards={[]} onChanged={() => undefined} />);
+
+    const toggle = screen.getByRole("button", { name: /teach eli what matters/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("radio", { name: /priority correction/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/feedback for eli/i)).not.toBeInTheDocument();
+  });
+
+  it("closes via the labeled close button and via Escape", async () => {
+    const user = userEvent.setup();
+    render(<FeedbackPanel cards={[]} onChanged={() => undefined} />);
+
+    await openWidget(user);
+    expect(screen.getByLabelText(/feedback for eli/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /close feedback form/i }));
+    expect(screen.queryByLabelText(/feedback for eli/i)).not.toBeInTheDocument();
+
+    await openWidget(user);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByLabelText(/feedback for eli/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /teach eli what matters/i })).toHaveFocus();
+  });
+
+  it("renders all feedback categories and disables an empty submission", async () => {
+    const user = userEvent.setup();
+    render(<FeedbackPanel cards={[]} onChanged={() => undefined} />);
+    await openWidget(user);
 
     expect(screen.getByRole("radio", { name: /priority correction/i })).toBeChecked();
     expect(screen.getByRole("radio", { name: /dashboard change/i })).toBeInTheDocument();
@@ -33,6 +63,7 @@ describe("FeedbackPanel", () => {
     vi.mocked(api.feedback).mockResolvedValue({ feedback_id: "feedback_1", status: "recorded", eli_agent_writeback: true, retriable: false, next_brief_refresh: true, detail: "Applied to the next brief." });
     render(<FeedbackPanel cards={[card]} onChanged={onChanged} />);
 
+    await openWidget(user);
     await user.selectOptions(screen.getByLabelText(/related item/i), "priority-1");
     await user.type(screen.getByLabelText(/feedback for eli/i), "This item should be lower priority.");
     await user.click(screen.getByRole("button", { name: /send feedback to eli/i }));
@@ -48,6 +79,7 @@ describe("FeedbackPanel", () => {
     vi.mocked(api.retryFeedback).mockResolvedValue({ feedback_id: "feedback_2", status: "recorded", eli_agent_writeback: true, retriable: false, next_brief_refresh: true, detail: "Recorded after retry." });
     render(<FeedbackPanel cards={[]} onChanged={() => undefined} />);
 
+    await openWidget(user);
     await user.click(screen.getByRole("radio", { name: /dashboard change/i }));
     await user.type(screen.getByLabelText(/feedback for eli/i), "Make the schedule easier to scan.");
     await user.click(screen.getByRole("button", { name: /send feedback to eli/i }));
@@ -62,6 +94,7 @@ describe("FeedbackPanel", () => {
     vi.mocked(api.feedback).mockRejectedValue(new Error("Feedback service unavailable"));
     render(<FeedbackPanel cards={[]} onChanged={() => undefined} />);
 
+    await openWidget(user);
     await user.type(screen.getByLabelText(/feedback for eli/i), "This priority order is incorrect.");
     await user.click(screen.getByRole("button", { name: /send feedback to eli/i }));
 

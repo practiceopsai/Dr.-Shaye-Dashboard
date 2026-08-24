@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { CheckCircle2, MessageSquareText, RefreshCw, Send } from "lucide-react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { CheckCircle2, MessageSquareText, RefreshCw, Send, X } from "lucide-react";
 import { api, Card, FeedbackCategory, FeedbackResponse } from "@/lib/api";
 
 const categories: { value: FeedbackCategory; label: string; description: string }[] = [
@@ -11,12 +11,42 @@ const categories: { value: FeedbackCategory; label: string; description: string 
 ];
 
 export default function FeedbackPanel({ cards, onChanged }: { cards: Card[]; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
   const [category, setCategory] = useState<FeedbackCategory>("priority_correction");
   const [itemId, setItemId] = useState("");
   const [feedback, setFeedback] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "retrying">("idle");
   const [result, setResult] = useState<FeedbackResponse | null>(null);
   const [error, setError] = useState("");
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const restoreFocus = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        restoreFocus.current = true;
+        setOpen(false);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      panelRef.current?.querySelector<HTMLElement>("input, select, textarea")?.focus();
+    } else if (restoreFocus.current) {
+      toggleRef.current?.focus();
+      restoreFocus.current = false;
+    }
+  }, [open]);
+
+  function close() {
+    restoreFocus.current = true;
+    setOpen(false);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -62,8 +92,25 @@ export default function FeedbackPanel({ cards, onChanged }: { cards: Card[]; onC
     }
   }
 
+  if (!open) {
+    return (
+      <div className="feedback-widget">
+        <button
+          type="button"
+          ref={toggleRef}
+          className="feedback-toggle"
+          aria-expanded={false}
+          aria-controls="feedback-panel"
+          onClick={() => setOpen(true)}
+        >
+          <MessageSquareText size={15} />Teach Eli what matters
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <section className="feedback-panel" aria-labelledby="feedback-title">
+    <section className="feedback-panel" id="feedback-panel" ref={panelRef} aria-labelledby="feedback-title">
       <div className="feedback-heading">
         <span><MessageSquareText size={19} /></span>
         <div>
@@ -71,6 +118,9 @@ export default function FeedbackPanel({ cards, onChanged }: { cards: Card[]; onC
           <h2 id="feedback-title">Teach Eli what matters</h2>
           <p>Correct priorities, reinforce good judgment, or request a command-center improvement.</p>
         </div>
+        <button type="button" className="feedback-close" onClick={close} aria-label="Close feedback form">
+          <X size={15} />Close
+        </button>
       </div>
 
       <form onSubmit={submit}>
