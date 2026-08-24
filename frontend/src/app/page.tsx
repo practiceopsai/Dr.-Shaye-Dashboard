@@ -122,8 +122,8 @@ export default function Home() {
             {activeView === "today" ? (
               <div className="matrix">
                 {lanes.map(lane => (
-                  <section className="lane" key={lane.key}>
-                    <div className="lane-title"><div><span>{lane.eyebrow}</span><h2>{lane.label}</h2></div><b>{grouped[lane.key].length}</b></div>
+                  <section className={`lane lane-${lane.key}`} id={`lane-${lane.key}`} key={lane.key} aria-labelledby={`lane-${lane.key}-title`}>
+                    <div className="lane-title"><div><span>{lane.eyebrow}</span><h2 id={`lane-${lane.key}-title`}>{lane.label}</h2></div><b>{grouped[lane.key].length}</b></div>
                     <div className="lane-cards">
                       {grouped[lane.key].map(card => <ActionCard key={card.id} card={card} onChanged={() => load(true)} />)}
                       {!grouped[lane.key].length && <div className="empty"><CheckCircle2 size={18} /><span>Nothing belongs here right now.</span></div>}
