@@ -8,6 +8,10 @@ from .config import Settings
 from .security import contains_phi
 
 
+class EliAgentBusy(RuntimeError):
+    """The agent vault is processing another governed run."""
+
+
 class EliAgentClient:
     """Durable bridge to Eli Agent: same production vault, retrieval, and run ledger."""
 
@@ -27,6 +31,9 @@ class EliAgentClient:
             response.raise_for_status()
             result = response.json()
         if result.get("exit_code") not in (None, 0):
+            error = f"{result.get('stderr', '')}\n{result.get('stdout', '')}"
+            if "run is active" in error.lower():
+                raise EliAgentBusy("Eli Agent is processing another run")
             raise RuntimeError(f"Eli Agent bridge exited {result.get('exit_code')}: {result.get('stderr', '')[-500:]}")
         return result
 
@@ -76,8 +83,24 @@ print("".join(parts)[:44000])
         result = await self.exec(code, timeout=110)
         return result.get("stdout", "")[:44000]
 
-    async def record(self, workflow: str, summary: str, details: list[str]) -> None:
-        envelope = json.dumps({"summary": summary, "details": details}, ensure_ascii=False)
+    async def record(
+        self,
+        workflow: str,
+        summary: str,
+        details: list[str],
+        *,
+        learnings: list[str] | None = None,
+        memory_candidates: list[str] | None = None,
+    ) -> None:
+        envelope = json.dumps(
+            {
+                "summary": summary,
+                "details": details,
+                "learnings": learnings or [],
+                "memory_candidates": memory_candidates or [],
+            },
+            ensure_ascii=False,
+        )
         code = f'''
 import json, os, subprocess, tempfile
 from pathlib import Path
@@ -89,7 +112,7 @@ if marker.exists():
     raise SystemExit("Eli Agent run is active; dashboard write deferred")
 s=subprocess.run(["python","tools/run.py","start","--workflow",{workflow!r}],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=60)
 if s.returncode: raise SystemExit(s.stderr or s.stdout)
-result={{"type":"dashboard","summary":payload["summary"],"workflow":{workflow!r},"mode":"approved_ui_action","results":payload["details"],"checks":[],"anomalies":[],"errors_hit":[],"new_errors":[],"learnings":[],"memory_candidates":[],"approvals_requested":[],"external_actions":[],"deferred":[]}}
+result={{"type":"dashboard","summary":payload["summary"],"workflow":{workflow!r},"mode":"approved_ui_action","results":payload["details"],"checks":[],"anomalies":[],"errors_hit":[],"new_errors":[],"learnings":payload["learnings"],"memory_candidates":payload["memory_candidates"],"approvals_requested":[],"external_actions":[],"deferred":[]}}
 p=v/"result-dashboard.json"; p.write_text(json.dumps(result,indent=2),encoding="utf-8")
 f=subprocess.run(["python","tools/run.py","finish","--workflow",{workflow!r},"--json",str(p)],cwd=v,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=180)
 try: p.unlink()

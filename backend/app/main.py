@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .integrations import ComposioMCPClient, EliAgentClient, integration_health
-from .models import ApprovalRequest, ExecuteRequest, FeedbackRequest, VoiceRequest
+from .models import ApprovalRequest, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceRequest
 from .priorities import build_dashboard
 from .security import contains_phi, payload_hash, require_auth
 
@@ -17,6 +17,42 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credent
 
 _cache: dict[str, Any] = {}
 _approvals: dict[str, dict[str, Any]] = {}
+_pending_feedback: dict[str, FeedbackRequest] = {}
+
+
+def _feedback_destination(req: FeedbackRequest) -> tuple[str, str]:
+    if req.category == "dashboard_change":
+        return "commitment-capture", "Dashboard improvement requested by Dr. Shaye"
+    if req.category == "positive_reinforcement":
+        return "daily-briefing", "Dashboard priority judgment reinforced by Dr. Shaye"
+    return "daily-briefing", "Dashboard priority correction submitted by Dr. Shaye"
+
+
+async def _deliver_feedback(feedback_id: str, req: FeedbackRequest) -> bool:
+    workflow, summary = _feedback_destination(req)
+    association = f" | item: {req.item_id}" if req.item_id else " | dashboard-wide"
+    disposition = f" | disposition: {req.disposition}" if req.disposition else ""
+    detail = f"Feedback {feedback_id} | category: {req.category}{association}{disposition} | Dr. Shaye said: {req.feedback}"
+    learnings = [f"Reported reinforcement from Dr. Shaye: {req.feedback}"] if req.category == "positive_reinforcement" else []
+    memory_candidates = [f"Candidate preference reported by Dr. Shaye: {req.feedback}"] if req.category == "priority_correction" else []
+    try:
+        await EliAgentClient(settings).record(
+            workflow,
+            summary,
+            [detail],
+            learnings=learnings,
+            memory_candidates=memory_candidates,
+        )
+    except Exception:
+        return False
+    _pending_feedback.pop(feedback_id, None)
+    return True
+
+
+async def _flush_pending_feedback(limit: int = 1) -> None:
+    for feedback_id, request in list(_pending_feedback.items())[:limit]:
+        if not await _deliver_feedback(feedback_id, request):
+            break
 
 
 @app.get("/health")
@@ -26,11 +62,18 @@ async def health():
 
 @app.get("/api/status", dependencies=[Depends(require_auth)])
 async def status():
-    return {"status": "ok", "integrations": await integration_health(settings), "live_actions_enabled": settings.live_actions_enabled}
+    return {
+        "status": "ok",
+        "integrations": await integration_health(settings),
+        "live_actions_enabled": settings.live_actions_enabled,
+        "pending_feedback": len(_pending_feedback),
+    }
 
 
 @app.get("/api/dashboard", dependencies=[Depends(require_auth)])
 async def dashboard(refresh: bool = False):
+    if _pending_feedback:
+        await _flush_pending_feedback()
     cached = _cache.get("dashboard")
     if cached and not refresh and datetime.now(timezone.utc) - cached[0] < timedelta(minutes=10):
         return cached[1]
@@ -39,18 +82,48 @@ async def dashboard(refresh: bool = False):
     return payload
 
 
-@app.post("/api/feedback", dependencies=[Depends(require_auth)])
+@app.post("/api/feedback", response_model=FeedbackResponse, dependencies=[Depends(require_auth)])
 async def feedback(req: FeedbackRequest):
     if contains_phi(req.feedback):
         raise HTTPException(422, "Feedback may contain clinical or patient-identifiable content and was not stored")
-    detail = f"Dashboard item {req.item_id}: {req.disposition} — {req.feedback}"
-    try:
-        await EliAgentClient(settings).record("daily-briefing", "Dashboard feedback recorded", [detail])
-        recorded = True
-    except Exception:
-        recorded = False
+    if req.item_id and (cached := _cache.get("dashboard")):
+        dashboard_payload = cached[1]
+        cards = dashboard_payload.cards if hasattr(dashboard_payload, "cards") else dashboard_payload.get("cards", [])
+        valid_ids = {card.id if hasattr(card, "id") else card.get("id") for card in cards}
+        if req.item_id not in valid_ids:
+            raise HTTPException(422, "The associated dashboard item is no longer available")
+    feedback_id = f"feedback_{secrets.token_hex(8)}"
+    _pending_feedback[feedback_id] = req
+    recorded = await _deliver_feedback(feedback_id, req)
     _cache.pop("dashboard", None)
-    return {"status": "recorded" if recorded else "deferred", "eli_agent_writeback": recorded}
+    if recorded:
+        detail = "Dashboard improvement request recorded with Eli as tracked work." if req.category == "dashboard_change" else "Feedback recorded with Eli and applied to the next priority brief."
+    else:
+        detail = "Feedback is safely queued. Eli will retry it when the command center refreshes."
+    return FeedbackResponse(
+        feedback_id=feedback_id,
+        status="recorded" if recorded else "queued",
+        eli_agent_writeback=recorded,
+        retriable=not recorded,
+        next_brief_refresh=True,
+        detail=detail,
+    )
+
+
+@app.post("/api/feedback/{feedback_id}/retry", response_model=FeedbackResponse, dependencies=[Depends(require_auth)])
+async def retry_feedback(feedback_id: str):
+    req = _pending_feedback.get(feedback_id)
+    if not req:
+        raise HTTPException(404, "Queued feedback was not found or was already recorded")
+    recorded = await _deliver_feedback(feedback_id, req)
+    return FeedbackResponse(
+        feedback_id=feedback_id,
+        status="recorded" if recorded else "queued",
+        eli_agent_writeback=recorded,
+        retriable=not recorded,
+        next_brief_refresh=True,
+        detail="Feedback recorded with Eli and applied to the next priority brief." if recorded else "Eli is still unavailable; the feedback remains safely queued.",
+    )
 
 
 @app.post("/api/approvals", dependencies=[Depends(require_auth)])

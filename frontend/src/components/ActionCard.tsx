@@ -27,7 +27,12 @@ export default function ActionCard({ card, onChanged }: { card: Card; onChanged:
   async function dismiss() {
     setState("working");
     try {
-      await api.feedback(card.id, "not_relevant", "Not relevant for today's command center; reduce recurrence unless circumstances materially change.");
+      await api.feedback({
+        category: "priority_correction",
+        item_id: card.id,
+        disposition: "not_relevant",
+        feedback: "Not relevant for today's command center; reduce recurrence unless circumstances materially change.",
+      });
       onChanged();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Could not record feedback");

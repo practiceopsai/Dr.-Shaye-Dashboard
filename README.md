@@ -10,6 +10,7 @@ Action-oriented daily command center for Dr. Omid Shaye. The application combine
 - Priority alignment — every refresh reads Dr. Shaye's current preference files, latest morning brief, latest run log, and BM25 priority/feedback retrievals before synthesis.
 - Ownership routing — technology and troubleshooting are deterministically assigned to Fabio in the delegate/monitor lanes, never presented as Dr. Shaye's personal execution work.
 - External actions — only exact, allowlisted tool calls may execute; all others become approval packages for Eli Agent.
+- Continuous improvement — Dr. Shaye can correct priorities, reinforce good judgment, or request dashboard changes. Feedback is written to Eli Agent, refreshes the next brief, and exposes a safe retry when writeback is temporarily unavailable.
 
 ## Local development
 

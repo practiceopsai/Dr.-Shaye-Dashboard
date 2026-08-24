@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 Priority = Literal["P0", "P1", "P2", "P3", "P4"]
@@ -42,10 +42,30 @@ class DashboardPayload(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+FeedbackCategory = Literal["priority_correction", "dashboard_change", "positive_reinforcement"]
+FeedbackDisposition = Literal["dismiss", "not_relevant", "modify", "complete"]
+
+
 class FeedbackRequest(BaseModel):
-    item_id: str
+    category: FeedbackCategory
     feedback: str = Field(min_length=1, max_length=2000)
-    disposition: Literal["dismiss", "not_relevant", "modify", "complete"]
+    item_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    disposition: FeedbackDisposition | None = None
+
+    @model_validator(mode="after")
+    def validate_association(self):
+        if self.disposition and not self.item_id:
+            raise ValueError("A disposition requires an associated dashboard item")
+        return self
+
+
+class FeedbackResponse(BaseModel):
+    feedback_id: str
+    status: Literal["recorded", "queued"]
+    eli_agent_writeback: bool
+    retriable: bool
+    next_brief_refresh: bool
+    detail: str
 
 
 class ApprovalRequest(BaseModel):

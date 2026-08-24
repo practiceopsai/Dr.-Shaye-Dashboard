@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, ArrowRight, CalendarDays, CheckCircle2, CircleAlert, Command, LockKeyhole, RefreshCw } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
+import FeedbackPanel from "@/components/FeedbackPanel";
 import SystemStatus from "@/components/SystemStatus";
 import ViewNav from "@/components/ViewNav";
 import VoiceCommand from "@/components/VoiceCommand";
@@ -111,6 +112,8 @@ export default function Home() {
           <div><CalendarDays size={18} /><span><b>{data?.cards.filter(card => card.lane === "protect").length || 0}</b> protected outcomes</span></div>
           <div className={data?.live ? "live" : "standby"}><i />{data?.live ? "Live context" : "Safe fallback"}</div>
         </div>
+
+        <FeedbackPanel cards={data?.cards || []} onChanged={() => load(true)} />
 
         {loading && !data ? (
           <div className="loading-grid">{[1, 2, 3].map(item => <div key={item} />)}</div>
