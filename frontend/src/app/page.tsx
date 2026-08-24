@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Activity, ArrowRight, CalendarDays, CheckCircle2, CircleAlert, Command, LockKeyhole, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, CalendarDays, CheckCircle2, CircleAlert, Command, LockKeyhole, LogOut, RefreshCw } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
 import FeedbackPanel from "@/components/FeedbackPanel";
+import GoogleSignIn from "@/components/GoogleSignIn";
 import ScheduleCalendar from "@/components/ScheduleCalendar";
 import SystemStatus from "@/components/SystemStatus";
 import ViewNav from "@/components/ViewNav";
 import VoiceCommand from "@/components/VoiceCommand";
-import { api, Card, Dashboard, Lane } from "@/lib/api";
+import { api, AuthUser, Card, Dashboard, GOOGLE_CREDENTIAL_KEY, Lane } from "@/lib/api";
 import { cardsForView, ViewKey, viewLabels } from "@/lib/views";
 
 const lanes: { key: Lane; label: string; eyebrow: string }[] = [
@@ -26,28 +27,54 @@ const viewDescriptions: Record<ViewKey, string> = {
 };
 
 export default function Home() {
-  const [token, setToken] = useState("");
-  const [ready, setReady] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState<ViewKey>("today");
 
-  useEffect(() => {
-    const savedToken = sessionStorage.getItem("eli_token") || "";
-    setToken(savedToken);
-    setReady(Boolean(savedToken));
-    if (savedToken) load(false);
+  const signOut = useCallback(() => {
+    sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);
+    window.google?.accounts.id.disableAutoSelect();
+    setUser(null);
+    setData(null);
+    setError("");
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
+    async function restoreSession() {
+      sessionStorage.removeItem("eli_token");
+      if (!sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY)) {
+        setCheckingSession(false);
+        return;
+      }
+      try {
+        const authenticatedUser = await api.me();
+        setUser(authenticatedUser);
+        await load(false);
+      } catch {
+        sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);
+      } finally {
+        setCheckingSession(false);
+      }
+    }
+    void restoreSession();
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("eli:unauthorized", signOut);
+    return () => window.removeEventListener("eli:unauthorized", signOut);
+  }, [signOut]);
+
+  useEffect(() => {
+    if (!user) return;
     const sync = () => {
       if (document.visibilityState === "visible") load(true);
     };
     const interval = window.setInterval(sync, 5 * 60 * 1000);
     return () => window.clearInterval(interval);
-  }, [ready]);
+  }, [user]);
 
   async function load(refresh = true) {
     setLoading(true);
@@ -61,11 +88,20 @@ export default function Home() {
     }
   }
 
-  function unlock(event: React.FormEvent) {
-    event.preventDefault();
-    sessionStorage.setItem("eli_token", token);
-    setReady(true);
-    setTimeout(() => load(false), 0);
+  async function authenticate(credential: string) {
+    setLoading(true);
+    setError("");
+    sessionStorage.setItem(GOOGLE_CREDENTIAL_KEY, credential);
+    try {
+      const authenticatedUser = await api.me();
+      setUser(authenticatedUser);
+      setData(await api.dashboard(false));
+    } catch (requestError) {
+      sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);
+      setError(requestError instanceof Error ? requestError.message : "Unable to sign in");
+    } finally {
+      setLoading(false);
+    }
   }
 
   const visibleCards = useMemo(() => cardsForView(data?.cards || [], activeView), [data, activeView]);
@@ -74,20 +110,22 @@ export default function Home() {
     [visibleCards],
   );
 
-  if (!ready) {
+  if (checkingSession) {
+    return <main className="login-page"><div className="login-mark"><Command size={23} /></div><div className="session-loader" aria-label="Checking your session" /></main>;
+  }
+
+  if (!user) {
     return (
       <main className="login-page">
         <div className="login-mark"><Command size={23} /></div>
         <section className="login-card">
           <p className="kicker">Private command center</p>
           <h1>Good morning,<br />Dr. Shaye.</h1>
-          <p>Enter your access key to open today&apos;s priorities.</p>
-          <form onSubmit={unlock}>
-            <label><LockKeyhole size={15} />Access key</label>
-            <input type="password" value={token} onChange={event => setToken(event.target.value)} autoFocus />
-            <button>Open command center<ArrowRight size={17} /></button>
-          </form>
-          <small>Protected session · Key stays in this browser tab</small>
+          <p>Sign in with your approved Google Workspace account to open today&apos;s priorities.</p>
+          <GoogleSignIn onCredential={credential => void authenticate(credential)} />
+          {loading && <p className="login-status">Verifying your account…</p>}
+          {error && <p className="login-error" role="alert">{error}</p>}
+          <small>Access is restricted to Omid and Fabio · The session stays in this browser tab</small>
         </section>
       </main>
     );
@@ -109,7 +147,7 @@ export default function Home() {
             <h1>{data?.greeting || "Good morning, Dr. Shaye."}</h1>
             <p className="focus">{data?.focus || "Loading today's operating picture…"}</p>
           </div>
-          <div className="header-actions"><VoiceCommand onChanged={() => load(true)} /><button className="refresh" onClick={() => load(true)} disabled={loading} aria-label="Refresh command center"><RefreshCw size={16} className={loading ? "spin" : ""} /></button></div>
+          <div className="header-actions"><VoiceCommand onChanged={() => load(true)} /><button className="refresh" onClick={() => load(true)} disabled={loading} aria-label="Refresh command center"><RefreshCw size={16} className={loading ? "spin" : ""} /></button><button className="refresh" onClick={signOut} aria-label={`Sign out ${user.email}`} title={`Signed in as ${user.email}`}><LogOut size={16} /></button></div>
         </header>
 
         <ViewNav current={activeView} onChange={setActiveView} className="mobile-nav" idPrefix="mobile" />

@@ -6,15 +6,27 @@ export type FeedbackCategory = "priority_correction" | "dashboard_change" | "pos
 export type FeedbackRequest = { category:FeedbackCategory; feedback:string; item_id?:string; disposition?:"dismiss"|"not_relevant"|"modify"|"complete" };
 export type FeedbackResponse = { feedback_id:string; status:"recorded"|"queued"; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean; detail:string };
 export type VoiceResponse = { command_id:string; status:"recorded"|"queued"; intent:"priority_feedback"|"dashboard_change"|"action_request"; message:string; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean };
+export type AuthUser = { email:string; name:string; picture?:string|null; role:"owner"|"chief_of_staff" };
+
+export const GOOGLE_CREDENTIAL_KEY = "eli_google_credential";
+
+export class ApiError extends Error {
+  constructor(message:string, public status:number) { super(message); this.name = "ApiError"; }
+}
 
 const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-function token(){ return typeof window === "undefined" ? "" : sessionStorage.getItem("eli_token") || ""; }
+function token(){ return typeof window === "undefined" ? "" : sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY) || ""; }
 async function call<T>(path:string, init?:RequestInit):Promise<T>{
   const response=await fetch(`${base}${path}`,{...init,headers:{"Content-Type":"application/json","Authorization":`Bearer ${token()}`,...init?.headers},cache:"no-store"});
-  if(!response.ok){ const body=await response.json().catch(()=>({})); throw new Error(body.detail || `Request failed (${response.status})`); }
+  if(!response.ok){
+    const body=await response.json().catch(()=>({}));
+    if(response.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event("eli:unauthorized"));
+    throw new ApiError(body.detail || `Request failed (${response.status})`, response.status);
+  }
   return response.json();
 }
 export const api={
+  me:()=>call<AuthUser>("/api/auth/me"),
   dashboard:(refresh=false)=>call<Dashboard>(`/api/dashboard?refresh=${refresh}`),
   feedback:(request:FeedbackRequest)=>call<FeedbackResponse>("/api/feedback",{method:"POST",body:JSON.stringify(request)}),
   retryFeedback:(feedback_id:string)=>call<FeedbackResponse>(`/api/feedback/${encodeURIComponent(feedback_id)}/retry`,{method:"POST"}),

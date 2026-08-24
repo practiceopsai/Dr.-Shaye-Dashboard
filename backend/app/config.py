@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     composio_personal_gmail_account: str = ""
     composio_personal_calendar_account: str = ""
     dashboard_timezone: str = "America/Los_Angeles"
-    dashboard_access_token: str = ""
+    google_client_id: str = ""
+    google_allowed_emails: str = "oshaye@gastrobh.com,fabio@practiceops.ai"
     allowed_origins: str = "http://localhost:3000"
     live_actions_enabled: bool = False
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -19,6 +20,10 @@ class Settings(BaseSettings):
     @property
     def origins(self) -> list[str]:
         return [value.strip() for value in self.allowed_origins.split(",") if value.strip()]
+
+    @property
+    def allowed_google_emails(self) -> set[str]:
+        return {value.strip().lower() for value in self.google_allowed_emails.split(",") if value.strip()}
 
 
 @lru_cache

@@ -9,7 +9,7 @@ from .config import get_settings
 from .integrations import ComposioMCPClient, EliAgentClient, integration_health
 from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceIntent, VoiceRequest, VoiceResponse
 from .priorities import build_dashboard
-from .security import contains_phi, payload_hash, require_auth
+from .security import AuthUser, contains_phi, payload_hash, require_auth
 
 
 settings = get_settings()
@@ -143,6 +143,16 @@ def _voice_reply(intent: VoiceIntent, recorded: bool) -> str:
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "eli-api", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/auth/me")
+async def auth_me(user: AuthUser = Depends(require_auth)):
+    return {
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture,
+        "role": user.role,
+    }
 
 
 @app.get("/api/status", dependencies=[Depends(require_auth)])
