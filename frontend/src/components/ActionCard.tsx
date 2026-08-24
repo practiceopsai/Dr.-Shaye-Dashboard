@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { ArrowUpRight, Check, Clock3, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowUpRight, Check, Clock3, PencilLine, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, Card } from "@/lib/api";
 
 const priorityTone: Record<string, string> = { P0: "critical", P1: "critical", P2: "important", P3: "strategic", P4: "routine" };
@@ -9,9 +9,20 @@ const priorityTone: Record<string, string> = { P0: "critical", P1: "critical", P
 type SignalState = { phase: "idle" | "sending" | "recorded" | "queued" | "error"; detail: string };
 
 export default function ActionCard({ card, onChanged }: { card: Card; onChanged: () => void }) {
+  const [effectiveCard, setEffectiveCard] = useState(card);
   const [state, setState] = useState<"idle" | "working" | "done">("idle");
   const [error, setError] = useState("");
   const [signal, setSignal] = useState<SignalState>({ phase: "idle", detail: "" });
+  const [alternativeOpen, setAlternativeOpen] = useState(false);
+  const [alternative, setAlternative] = useState("");
+  const [alternativeState, setAlternativeState] = useState<SignalState>({ phase: "idle", detail: "" });
+
+  useEffect(() => {
+    setEffectiveCard(card);
+    setAlternativeOpen(false);
+    setAlternative("");
+    setAlternativeState({ phase: "idle", detail: "" });
+  }, [card]);
 
   async function sendSignal(useful: boolean) {
     if (signal.phase === "sending" || signal.phase === "recorded" || signal.phase === "queued") return;
@@ -41,13 +52,45 @@ export default function ActionCard({ card, onChanged }: { card: Card; onChanged:
     setState("working");
     setError("");
     try {
-      const approval = await api.approve(card);
+      const approval = await api.approve(effectiveCard);
       await api.execute(approval.approval_id, approval.payload_hash);
       setState("done");
       setTimeout(onChanged, 700);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Action failed");
       setState("idle");
+    }
+  }
+
+  async function useAlternative(event: React.FormEvent) {
+    event.preventDefault();
+    const requestedAction = alternative.trim();
+    if (!requestedAction || alternativeState.phase === "sending") return;
+    setAlternativeState({ phase: "sending", detail: "" });
+    setError("");
+    try {
+      const response = await api.feedback({
+        category: "priority_correction",
+        item_id: card.id,
+        disposition: "modify",
+        feedback: `For this item, replace the suggested action "${card.action.label}" with Dr. Shaye's alternative: "${requestedAction}". Use this correction when recommending similar daily actions in future briefs.`,
+      });
+      setEffectiveCard(current => ({
+        ...current,
+        action: {
+          label: requestedAction,
+          kind: "eli_agent_queue",
+          tool_name: null,
+          arguments: {},
+          account: "personal",
+          recipients: [],
+          reversible: true,
+        },
+      }));
+      setAlternativeState({ phase: response.status === "recorded" ? "recorded" : "queued", detail: response.detail });
+      setAlternativeOpen(false);
+    } catch (requestError) {
+      setAlternativeState({ phase: "error", detail: requestError instanceof Error ? requestError.message : "Could not save the alternative action" });
     }
   }
 
@@ -68,16 +111,26 @@ export default function ActionCard({ card, onChanged }: { card: Card; onChanged:
   }
 
   return (
-    <article className={`action-card tone-${priorityTone[card.priority] || "routine"}`}>
+    <article className={`action-card tone-${priorityTone[effectiveCard.priority] || "routine"}`}>
       <div className="card-top">
-        <div className="badges"><span className="priority">{card.priority}</span><span>{card.category}</span></div>
-        {card.deadline && <span className="deadline"><Clock3 size={13} />{card.deadline}</span>}
+        <div className="badges"><span className="priority">{effectiveCard.priority}</span><span>{effectiveCard.category}</span></div>
+        {effectiveCard.deadline && <span className="deadline"><Clock3 size={13} />{effectiveCard.deadline}</span>}
       </div>
-      <h3>{card.title}</h3>
-      <p className="context">{card.context}</p>
-      <div className="why"><span>Why it matters</span><p>{card.consequence}</p></div>
-      <div className="suggestion"><Sparkles size={16} /><div><span>Recommended action</span><p>{card.action.label}</p></div></div>
-      <div className="meta"><span><ShieldCheck size={13} />{card.action.kind === "eli_agent_queue" ? "Eli Agent review" : "Exact action"}</span></div>
+      <h3>{effectiveCard.title}</h3>
+      <p className="context">{effectiveCard.context}</p>
+      <div className="why"><span>Why it matters</span><p>{effectiveCard.consequence}</p></div>
+      <div className="suggestion"><Sparkles size={16} /><div><span>{alternativeState.phase === "recorded" || alternativeState.phase === "queued" ? "Your selected action" : "Recommended action"}</span><p>{effectiveCard.action.label}</p></div></div>
+      <button type="button" className="alternative-toggle" onClick={() => setAlternativeOpen(value => !value)} aria-expanded={alternativeOpen}><PencilLine size={14} />Choose a different action</button>
+      {alternativeOpen && (
+        <form className="alternative-form" onSubmit={useAlternative}>
+          <label htmlFor={`alternative-${card.id}`}>What should Eli do instead?</label>
+          <textarea id={`alternative-${card.id}`} value={alternative} onChange={event => setAlternative(event.target.value)} maxLength={600} rows={3} placeholder="Describe the action you want taken instead" />
+          <div><small>{alternative.length}/600</small><button type="submit" disabled={!alternative.trim() || alternativeState.phase === "sending"}>{alternativeState.phase === "sending" ? "Saving…" : "Use this action"}</button></div>
+        </form>
+      )}
+      {(alternativeState.phase === "recorded" || alternativeState.phase === "queued") && <p className={`alternative-result ${alternativeState.phase}`} role="status"><Check size={13} />Alternative selected and {alternativeState.phase === "recorded" ? "learned" : "queued for learning"}. Approve below to act.</p>}
+      {alternativeState.phase === "error" && <p className="alternative-result error" role="alert">{alternativeState.detail}</p>}
+      <div className="meta"><span><ShieldCheck size={13} />{effectiveCard.action.kind === "eli_agent_queue" ? "Eli Agent review" : "Exact action"}</span></div>
       {error && <p className="error">{error}</p>}
       <div className="card-actions">
         <button className="primary" onClick={execute} disabled={state !== "idle"}>
@@ -93,7 +146,7 @@ export default function ActionCard({ card, onChanged }: { card: Card; onChanged:
         {(signal.phase === "recorded" || signal.phase === "queued") && <small className="signal-status" role="status">{signal.phase === "recorded" ? "Recorded" : "Queued"}{signal.detail ? ` · ${signal.detail}` : ""}</small>}
         {signal.phase === "error" && <small className="signal-status signal-error" role="alert">{signal.detail}</small>}
       </div>
-      <p className="source">Source: {card.source}</p>
+      <p className="source">Source: {effectiveCard.source}</p>
     </article>
   );
 }

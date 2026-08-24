@@ -6,7 +6,7 @@ import { api, type Card } from "@/lib/api";
 
 vi.mock("@/lib/api", async importOriginal => {
   const original = await importOriginal<typeof import("@/lib/api")>();
-  return { ...original, api: { ...original.api, feedback: vi.fn() } };
+  return { ...original, api: { ...original.api, feedback: vi.fn(), approve: vi.fn(), execute: vi.fn() } };
 });
 
 const card: Card = {
@@ -110,5 +110,48 @@ describe("ActionCard", () => {
     await user.click(screen.getByRole("button", { name: "Useful" }));
     expect(await screen.findByRole("status")).toHaveTextContent(/recorded/i);
     expect(api.feedback).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets Dr. Shaye replace the suggestion and approves the exact alternative", async () => {
+    const user = userEvent.setup();
+    const alternative = "Ask Eli Agent to draft two options and bring them back for my review";
+    vi.mocked(api.feedback).mockResolvedValue({ feedback_id: "feedback_5", status: "recorded", eli_agent_writeback: true, retriable: false, next_brief_refresh: true, detail: "Learned" });
+    vi.mocked(api.approve).mockResolvedValue({ approval_id: "approval_1", payload_hash: "hash_1" });
+    vi.mocked(api.execute).mockResolvedValue({ status: "queued_for_eli_agent" });
+    render(<ActionCard card={card} onChanged={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: "Choose a different action" }));
+    expect(screen.getByRole("button", { name: "Use this action" })).toBeDisabled();
+    await user.type(screen.getByLabelText("What should Eli do instead?"), alternative);
+    await user.click(screen.getByRole("button", { name: "Use this action" }));
+
+    expect(api.feedback).toHaveBeenCalledWith({
+      category: "priority_correction",
+      item_id: "priority-1",
+      disposition: "modify",
+      feedback: `For this item, replace the suggested action "${card.action.label}" with Dr. Shaye's alternative: "${alternative}". Use this correction when recommending similar daily actions in future briefs.`,
+    });
+    expect(await screen.findByText(alternative)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/selected and learned/i);
+
+    await user.click(screen.getByRole("button", { name: "Approve & act" }));
+    expect(api.approve).toHaveBeenCalledWith(expect.objectContaining({
+      id: "priority-1",
+      action: expect.objectContaining({ label: alternative, kind: "eli_agent_queue", tool_name: null }),
+    }));
+    expect(api.execute).toHaveBeenCalledWith("approval_1", "hash_1");
+  });
+
+  it("keeps the alternative editor open when learning write-back fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.feedback).mockRejectedValue(new Error("Could not reach Eli Agent"));
+    render(<ActionCard card={card} onChanged={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: "Choose a different action" }));
+    await user.type(screen.getByLabelText("What should Eli do instead?"), "Prepare a shorter decision memo");
+    await user.click(screen.getByRole("button", { name: "Use this action" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach Eli Agent");
+    expect(screen.getByLabelText("What should Eli do instead?")).toBeInTheDocument();
   });
 });
