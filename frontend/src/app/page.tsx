@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, ArrowRight, CalendarDays, CheckCircle2, CircleAlert, Command, LockKeyhole, RefreshCw } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
+import SystemStatus from "@/components/SystemStatus";
 import ViewNav from "@/components/ViewNav";
 import VoiceCommand from "@/components/VoiceCommand";
 import { api, Card, Dashboard, Lane } from "@/lib/api";
@@ -20,12 +21,6 @@ const viewDescriptions: Record<ViewKey, string> = {
   schedule: "Time-bound work and calendar-driven commitments.",
   commitments: "Items that need action or delegation now.",
   decisions: "The highest-priority choices awaiting attention.",
-};
-
-const systemLabels: Record<string, string> = {
-  eli_agent: "Eli Agent",
-  composio: "Connected apps",
-  anthropic: "Priority engine",
 };
 
 export default function Home() {
@@ -92,16 +87,7 @@ export default function Home() {
       <aside>
         <div className="brand"><span><Command size={20} /></span><div><b>Eli</b><small>Command Center</small></div></div>
         <ViewNav current={activeView} onChange={setActiveView} className="side-nav" idPrefix="side" />
-        <div className="systems">
-          <p>Systems</p>
-          {Object.keys(systemLabels).map(key => (
-            <div key={key}>
-              <i className={data?.integrations[key] ? "online" : "offline"} />
-              <span>{systemLabels[key]}</span>
-              <small>{data?.integrations[key] ? "Connected" : "Unavailable"}</small>
-            </div>
-          ))}
-        </div>
+        <SystemStatus integrations={data?.integrations || {}} />
         <div className="privacy"><LockKeyhole size={15} /><p><b>Private by design</b><span>No patient data. Every external action requires exact approval.</span></p></div>
       </aside>
 

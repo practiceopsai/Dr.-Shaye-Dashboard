@@ -29,6 +29,7 @@ export default function ViewNav({
             id={`${idPrefix}-tab-${key}`}
             type="button"
             role="tab"
+            aria-label={viewLabels[key]}
             aria-selected={current === key}
             aria-controls={`view-${key}`}
             className={current === key ? "selected" : ""}
