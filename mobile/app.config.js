@@ -19,7 +19,12 @@ module.exports = {
       bundleIdentifier: process.env.IOS_BUNDLE_IDENTIFIER || release.bundleIdentifier,
       appleTeamId: process.env.APPLE_TEAM_ID || release.appleTeamId,
       supportsTablet: false,
-      infoPlist: { ITSAppUsesNonExemptEncryption: false },
+      infoPlist: {
+        ITSAppUsesNonExemptEncryption: false,
+        // ExpoFileSystem links Photos APIs. Apple requires this metadata even
+        // though Eli never requests photo permission or reads the library.
+        NSPhotoLibraryUsageDescription: 'Eli does not need access to your photos. You can keep photo access disabled.',
+      },
     },
     plugins: [
       'expo-secure-store',
