@@ -11,6 +11,7 @@ import { drafts } from './src/drafts';
 import type { AuthUser, Card } from './src/types';
 import { Composer } from './src/Composer';
 import { ApprovalSheet } from './src/ApprovalSheet';
+import { GoogleButton } from './src/GoogleButton';
 import { Commitments, EliStatus, LegalLinks, Schedule, Today } from './src/screens';
 import { displayTime } from './src/freshness';
 import { Body, Button, colors, Empty, Heading, Icon, type IconName, Kicker, Notice, Panel, s, Small, Title } from './src/ui';
@@ -127,7 +128,7 @@ function Session() {
   return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.login}>
     <View style={[styles.mark, { width: 70, height: 70, borderRadius: 23 }]}><Icon name="leaf-outline" size={38} color={colors.white} /></View>
     <Kicker>Eli Command Center</Kicker><Text style={styles.loginTitle}>A clear view.{ '\n' }A considered next step.</Text><Body style={{ color: colors.muted, fontSize: 17, lineHeight: 26 }}>Your priorities, commitments, and Eli’s current state. Together in one private place.</Body>
-    <Panel><Heading>Welcome back</Heading><Body>Sign in with your approved Google Workspace account.</Body>{!!error && <Notice danger>{error}</Notice>}{busy ? <ActivityIndicator color={colors.green} accessibilityLabel="Checking sign-in" /> : <Button label="Continue with Google" icon="logo-google" onPress={() => { void login(); }} disabled={!loginConfigured || Platform.OS === 'web'} />}{!loginConfigured && <Small>Google login is awaiting release configuration.</Small>}{Platform.OS === 'web' && <Small>Install the signed iPhone app to sign in. This browser view is for layout review.</Small>}</Panel>
+    <Panel><Heading>Welcome back</Heading><Body>Sign in with your approved Google Workspace account.</Body>{!!error && <Notice danger>{error}</Notice>}{busy ? <ActivityIndicator color={colors.green} accessibilityLabel="Checking sign-in" /> : <GoogleButton onPress={() => { void login(); }} disabled={!loginConfigured || Platform.OS === 'web'} />}{!loginConfigured && <Small>Google login is awaiting release configuration.</Small>}{Platform.OS === 'web' && <Small>Install the signed iPhone app to sign in. This browser view is for layout review.</Small>}</Panel>
     <LegalLinks /><Small>Private access for Dr. Shaye and his chief of staff.</Small>
   </ScrollView></SafeAreaView>;
 }
