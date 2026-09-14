@@ -1,0 +1,39 @@
+name: Publish compatible iPhone update
+on:
+  workflow_run:
+    workflows: ["Verify iPhone app"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: iphone-updates
+  cancel-in-progress: false
+jobs:
+  update:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - name: Publish the tested commit to the production runtime
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: >-
+          npx --yes eas-cli@latest update
+          --channel production --platform ios --environment production
+          --non-interactive --message "GitHub $VERIFIED_SHA"

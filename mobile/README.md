@@ -52,7 +52,7 @@ npx eas-cli@latest build --platform ios --profile production
 npx eas-cli@latest submit --platform ios --profile production --latest
 ```
 
-The `Build iPhone for TestFlight` GitHub workflow performs checks before building/submitting. It requires an Expo automation token in the `EXPO_TOKEN` repository secret, managed iOS signing credentials, and configured App Store Connect submission credentials. It never purchases a membership or invites testers.
+The `Build iPhone for TestFlight` GitHub workflow performs checks before building/submitting. The Expo automation token is configured in the `EXPO_TOKEN` repository secret. Managed iOS signing credentials and App Store Connect submission credentials must also be ready. This workflow never purchases a membership or invites testers.
 
 ## Fresh data and software updates
 
@@ -64,7 +64,7 @@ EAS Update is enabled on the production channel with fingerprint-based runtime m
 npx eas-cli@latest update --channel production --platform ios --environment production --message "Describe the compatible app change"
 ```
 
-Only publish after verification. Native dependency/configuration changes produce a different runtime and require a new Apple-signed build. TestFlight/App Store automatic updates depend on the user’s Apple settings. Optional end-to-end EAS Update signing can be configured with `certs/update-certificate.pem`; its private key belongs outside this repository. Expo currently restricts that extra signing feature to paid Production/Enterprise plans. Standard updates use Expo’s authenticated publishing and HTTPS delivery.
+The `Publish compatible iPhone update` workflow automatically publishes successful native-app checks for pushes to this repository’s main branch. It publishes the exact verified commit and does not accept pull-request or fork runs. Native dependency/configuration changes produce a different runtime and require a new Apple-signed build. TestFlight/App Store automatic updates depend on the user’s Apple settings. Optional end-to-end EAS Update signing can be configured with `certs/update-certificate.pem`; its private key belongs outside this repository. Expo currently restricts that extra signing feature to paid Production/Enterprise plans. Standard updates use Expo’s authenticated publishing and HTTPS delivery.
 
 ## Device acceptance before broad distribution
 
