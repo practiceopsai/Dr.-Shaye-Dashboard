@@ -2,6 +2,18 @@
 
 Action-oriented daily command center for Dr. Omid Shaye. The application combines a Next.js dashboard with a FastAPI control plane and connects to the existing Eli Agent through the production Orgo vault.
 
+## Freshness and current Eli state
+
+The dashboard reads the current approved character, confirmed preference files, user model, familiarity stage, autonomy ledgers, memory health, messaging status, and scheduled-job counts from production. It shows their observation times and source revisions. Historical CURRENT_STATUS timelines and persona example rewrites are not used as today's work. Transient briefing, log, and interaction evidence older than 36 hours is excluded; standing confirmed preferences can remain valid longer.
+
+Every brief expires after five minutes and at the next midnight in Dr. Shaye's timezone. Expired actions are hidden. A failed synthesis returns an explicit unavailable state with no invented fallback tasks. The frontend checks for fresh data every minute while visible, on foreground, and on network recovery. With BACKGROUND_REFRESH_ENABLED=true, the backend prepares each new day's brief even when neither phone is open, refreshes while in use, and retries unavailable integrations. Source dates and partial-coverage warnings remain visible: a fresh synthesis does not prove every underlying real-world fact is current.
+
+Gmail and Calendar are verified through account-pinned reads, including bounded pagination and smaller pages when the connector substitutes a preview. Provider configuration alone never counts as a successful connection. Personal-account responses are reduced to safe metadata before synthesis.
+
+Pending internal feedback and voice writeback use SQLite when DASHBOARD_STATE_PATH is set. Production must mount persistent storage at that path. A bounded background worker retries these records; direct external-action approvals remain short-lived and are not replayed after restart. Operator feedback is attributed to the authenticated operator and cannot become a preference attributed to Dr. Shaye.
+
+Production publishes through the existing Railway workflow after backend tests, frontend tests, and a production build pass. See [the TestFlight/iPhone plan](docs/IPHONE-PLAN.md) for native distribution and the distinction between live server updates and signed app updates.
+
 ## Architecture
 
 - `frontend/` — Next.js App Router UI.

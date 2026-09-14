@@ -93,10 +93,14 @@ def test_dashboard_shape_unwraps_full_dashboard_inside_cards_string():
     assert normalized["focus"] == "Nested focus"
 
 
-@pytest.mark.parametrize("cards", ["not-json", {}, ["not-an-object"], [], [{}] * 7])
+@pytest.mark.parametrize("cards", ["not-json", {}, ["not-an-object"], [{}] * 7])
 def test_dashboard_shape_rejects_invalid_or_unbounded_cards(cards):
     with pytest.raises(ValueError):
         _validate_dashboard_shape({"greeting": "Hi", "focus": "Focus", "cards": cards})
+
+
+def test_empty_day_does_not_require_invented_work():
+    assert _validate_dashboard_shape({"greeting": "Hi", "focus": "Nothing verified needs action", "cards": []})["cards"] == []
 
 
 class _FakeClient:

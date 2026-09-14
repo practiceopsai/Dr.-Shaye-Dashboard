@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import httpx
@@ -20,6 +21,14 @@ class EliAgentClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.url = f"https://www.orgo.ai/api/computers/{settings.orgo_computer_id}/exec"
+
+    async def snapshot(self) -> dict[str, Any]:
+        code = Path(__file__).with_name("agent_snapshot.py").read_text(encoding="utf-8")
+        result = await self.exec(code + "\nprint(json.dumps(collect_snapshot()))\n", timeout=180)
+        value = json.loads(result.get("stdout", ""))
+        if not isinstance(value.get("summary"), dict) or not value.get("context"):
+            raise RuntimeError("Eli returned an incomplete snapshot")
+        return value
 
     async def exec(self, code: str, timeout: float = 90) -> dict[str, Any]:
         if not self.settings.orgo_api_key:
@@ -40,57 +49,7 @@ class EliAgentClient:
         return result
 
     async def context(self) -> str:
-        code = r'''
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import subprocess,sys
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-v=Path(r"C:\data\DrShaye\vault")
-parts=[]
-direct=[
-    "CURRENT_STATUS.md",
-    "daily-briefing/PLAYBOOK.md",
-    "daily-briefing/LEARNINGS.md",
-    "design/governance/approval-and-autonomy.md",
-]
-preferences=sorted((v/"memory/preferences").glob("*.md"), key=lambda p:p.stat().st_mtime, reverse=True)
-direct.extend(str(p.relative_to(v)) for p in preferences[:10])
-for folder in ["briefings/morning", "daily-briefing/logs", "commitment-capture/logs"]:
-    candidates=sorted((v/folder).glob("*.md"), key=lambda p:p.stat().st_mtime, reverse=True)
-    if candidates: direct.append(str(candidates[0].relative_to(v)))
-for rel in direct:
-    p=v/rel
-    if p.exists(): parts.append(f"\n--- {rel} ---\n"+p.read_text(encoding="utf-8")[:2200])
-master=v/"source/context-original/Omid_Shaye_Chief_of_Staff_Master_Context_v0.10.0.md"
-if master.exists():
-    text=master.read_text(encoding="utf-8")
-    start=text.find("## File: `04_OPERATING_SYSTEM/PRIORITY_AND_ESCALATION_ENGINE.md`")
-    if start >= 0:
-        end=text.find("\n## File: `", start + 20)
-        parts.append("\n--- canonical priority and escalation engine ---\n"+text[start:end if end >= 0 else None][:7500])
-queries=[
-    "What priority corrections, dismissals, useful or not-useful signals, and preference changes has Dr. Shaye given most recently? New explicit feedback should override older defaults.",
-    "What commitments, deadlines, waiting-on items, and active projects matter now?",
-    "What are Omid's current daily priority rules and protected-time rules?",
-    "What did the most recent daily briefing and recent workflow run results report, decide, or leave open?",
-]
-def ask(q):
-    r=subprocess.run(["python", "tools/run.py", "ask", q, "--top", "4"], cwd=v, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    value=r.stdout if r.returncode == 0 else f"Retrieval failed: {r.stderr or r.stdout}"
-    return q,value[:3500],r.returncode == 0
-answers={}
-retrieval_successes=0
-with ThreadPoolExecutor(max_workers=4) as pool:
-    futures=[pool.submit(ask,q) for q in queries]
-    for future in as_completed(futures):
-        q,value,ok=future.result(); answers[q]=value; retrieval_successes += int(ok)
-parts.append(f"\n--- retrieval health ---\nRAG queries succeeded: {retrieval_successes}/{len(queries)}")
-for q in queries:
-    parts.append(f"\n--- retrieval: {q} ---\n"+answers.get(q,""))
-print("".join(parts)[:52000])
-'''
-        result = await self.exec(code, timeout=110)
-        return result.get("stdout", "")[:52000]
+        return (await self.snapshot())["context"]
 
     async def record(
         self,
@@ -144,6 +103,8 @@ class ComposioMCPClient:
         self.settings = settings
         self.key = settings.composio_consumer_api_key
         self.endpoint = "https://connect.composio.dev/mcp"
+        self.read_health: dict[str, bool] = {"gmail": False, "calendar": False}
+        self.read_warnings: list[str] = []
 
     @staticmethod
     def _decode_response(text: str) -> dict[str, Any]:
@@ -275,7 +236,7 @@ class ComposioMCPClient:
                     "timeZone": self.settings.dashboard_timezone,
                     "singleEvents": True,
                     "orderBy": "startTime",
-                    "maxResults": 100,
+                    "maxResults": 20,
                     "showDeleted": False,
                 },
                 "account": calendar_account,
@@ -283,16 +244,43 @@ class ComposioMCPClient:
         ]
 
         async def read_one(tool: dict[str, Any]) -> list[dict[str, Any]]:
-            # Reads are idempotent, so one empty/transient response may be retried safely.
-            result: list[dict[str, Any]] = []
-            for _ in range(2):
-                result = await self._multi_execute([tool], "FETCHING_PERSONAL_SIGNALS")
+            gmail = tool["tool_slug"] == "GMAIL_FETCH_EMAILS"
+            key, token_key, size_key = ("messages", "page_token", "max_results") if gmail else ("items", "pageToken", "maxResults")
+            call = {**tool, "arguments": dict(tool["arguments"])}
+            rows, seen_tokens = [], set()
+            data: dict[str, Any] = {}
+            successful = False
+            # A bounded metadata window, with explicit coverage warnings. Smaller
+            # pages avoid Composio's workbench/data_preview response substitution.
+            for _ in range(20):
+                result = await self._multi_execute([call], "FETCHING_PERSONAL_SIGNALS")
                 response = result[0].get("response", {}) if result else {}
-                if response.get("data"):
+                payload = response.get("data")
+                if response.get("successful") is not True or not isinstance(payload, dict):
+                    if call["arguments"][size_key] > 1:
+                        call["arguments"][size_key] = max(1, call["arguments"][size_key] // 2)
+                        continue
+                    return [{"tool_slug": tool["tool_slug"], "response": {"successful": False, "data": {key: rows}}}]
+                successful = True
+                rows.extend(payload.get(key) or [])
+                data = payload
+                token = payload.get("nextPageToken") or payload.get("next_page_token")
+                if not token:
                     break
-            return result
+                if token in seen_tokens:
+                    break
+                seen_tokens.add(token)
+                call["arguments"][token_key] = token
+            return [{"tool_slug": tool["tool_slug"], "response": {"successful": successful, "data": {**data, key: rows}}}]
 
         batches = await asyncio.gather(*(read_one(tool) for tool in tools), return_exceptions=True)
+        for key, batch in zip(("gmail", "calendar"), batches):
+            response = batch[0].get("response", {}) if isinstance(batch, list) and batch else {}
+            self.read_health[key] = response.get("successful") is True and isinstance(response.get("data"), dict)
+            if not self.read_health[key]:
+                self.read_warnings.append(f"{key.title()} could not be verified; its information is incomplete.")
+            elif response["data"].get("nextPageToken") or response["data"].get("next_page_token"):
+                self.read_warnings.append(f"{key.title()} has additional results beyond this dashboard's window.")
         results = [item for batch in batches if isinstance(batch, list) for item in batch]
         lines: list[str] = []
         calendar_items: list[CalendarItem] = []
@@ -303,14 +291,16 @@ class ComposioMCPClient:
             data = response.get("data", {})
             if item.get("tool_slug") == "GMAIL_FETCH_EMAILS":
                 messages = sorted(data.get("messages") or [], key=lambda m: m.get("messageTimestamp") or "", reverse=True)
-                for message in messages[:20]:
+                for message in messages:
                     subject = str(message.get("subject") or "").strip()[:180]
                     sender = str(message.get("sender") or "").strip()[:140]
                     signal = f"{subject} | from {sender}"
                     if self._safe_signal(signal):
                         lines.append(f"INBOX | {message.get('messageTimestamp') or 'time unknown'} | {signal}")
             elif item.get("tool_slug") == "GOOGLECALENDAR_EVENTS_LIST":
-                for event in (data.get("items") or [])[:100]:
+                for event in data.get("items") or []:
+                    if event.get("status") == "cancelled":
+                        continue
                     summary = str(event.get("summary") or "Busy").strip()[:180]
                     start = event.get("start") or {}
                     when = start.get("dateTime") or start.get("date") or "time unknown"
@@ -319,7 +309,7 @@ class ComposioMCPClient:
                             calendar_items.append(calendar_item)
                             signal_title = re.sub(r"\s+", " ", summary)
                             lines.append(f"CALENDAR | event_id={calendar_item.id} | start={when} | title={signal_title}")
-        return "\n".join(lines[:120]), calendar_items[:100]
+        return "\n".join(lines), calendar_items
 
     @staticmethod
     def validate_write(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -409,4 +399,5 @@ async def integration_health(settings: Settings) -> dict[str, bool]:
             return False
 
     eli_agent_ok, composio_ok = await asyncio.gather(orgo_check(), composio_check())
-    return {"eli_agent": eli_agent_ok, "composio": composio_ok, "anthropic": bool(settings.anthropic_api_key)}
+    # A configured secret is not proof that a provider can serve a request.
+    return {"eli_agent": eli_agent_ok, "composio": composio_ok, "anthropic": False}

@@ -1,25 +1,92 @@
 import asyncio
 import re
 import secrets
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
-from .integrations import ComposioMCPClient, EliAgentClient, integration_health
+from .integrations import ComposioMCPClient, EliAgentClient
 from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceIntent, VoiceRequest, VoiceResponse
 from .priorities import build_dashboard
+from .outbox import PendingMap
 from .security import AuthUser, contains_phi, payload_hash, require_auth
 
 
 settings = get_settings()
-app = FastAPI(title="Eli Command Center API", version="1.0.0")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(_refresh_loop()) if settings.background_refresh_enabled else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+app = FastAPI(title="Eli Command Center API", version="1.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 _cache: dict[str, Any] = {}
 _approvals: dict[str, dict[str, Any]] = {}
-_pending_feedback: dict[str, tuple[FeedbackRequest, str]] = {}
-_pending_voice: dict[str, tuple[str, VoiceIntent]] = {}
+_pending_feedback = PendingMap(settings.dashboard_state_path, "feedback",
+    encode=lambda value: [value[0].model_dump(), value[1]], decode=lambda value: (FeedbackRequest.model_validate(value[0]), value[1]))
+_pending_voice = PendingMap(settings.dashboard_state_path, "voice", decode=tuple)
+_actors = PendingMap(settings.dashboard_state_path, "actors")
+_writeback_lock = asyncio.Lock()
+_refresh_lock = asyncio.Lock()
+_last_viewed: datetime | None = None
+
+
+@app.middleware("http")
+async def private_responses(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, private"
+    return response
+
+
+def _cache_current(payload: DashboardPayload, now: datetime) -> bool:
+    local = ZoneInfo(settings.dashboard_timezone)
+    return bool(payload.expires_at and now < payload.expires_at
+                and payload.generated_at.astimezone(local).date() == now.astimezone(local).date())
+
+
+async def _refresh_dashboard(force: bool = False) -> DashboardPayload:
+    async with _refresh_lock:
+        now = datetime.now(timezone.utc)
+        cached = _cache.get("dashboard")
+        if cached and _cache_current(cached[1], now) and (not force or now - cached[0] < timedelta(seconds=15)):
+            return cached[1]
+        payload = await build_dashboard(settings)
+        _cache["dashboard"] = (datetime.now(timezone.utc), payload)
+        return payload
+
+
+async def _refresh_loop():
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            cached = _cache.get("dashboard")
+            zone = ZoneInfo(settings.dashboard_timezone)
+            new_day = not cached or cached[1].generated_at.astimezone(zone).date() != now.astimezone(zone).date()
+            viewed = _last_viewed and now - _last_viewed < timedelta(minutes=10)
+            # Prepare the new day's brief even with no open phones. While in use,
+            # keep it fresh; avoid hundreds of unused model calls overnight.
+            retry_needed = cached and not all(cached[1].integrations.values())
+            if new_day or viewed or retry_needed:
+                await _refresh_dashboard()
+            async with _writeback_lock:
+                await _flush_pending_feedback()
+                await _flush_pending_voice()
+        except Exception:
+            logging.getLogger("eli.refresh").exception("Background refresh failed")
+        await asyncio.sleep(60)
 
 _PRIORITY_VOICE_TERMS = re.compile(
     r"\b(priority|priorities|important|urgent|rank|ranking|daily brief|not relevant|not useful|useful|prefer|preference|show less|show more|protect time)\b",
@@ -58,6 +125,9 @@ def _feedback_item_context(req: FeedbackRequest) -> str:
 
 
 async def _deliver_feedback(feedback_id: str, req: FeedbackRequest, item_context: str = "") -> bool:
+    if feedback_id not in _pending_feedback:
+        return True
+    actor = _actors.get(feedback_id, {"label": "Unverified dashboard user", "owner": False})
     workflow, summary = _feedback_destination(req)
     association = f" | item: {req.item_id}" if req.item_id else " | dashboard-wide"
     disposition = f" | disposition: {req.disposition}" if req.disposition else ""
@@ -68,6 +138,10 @@ async def _deliver_feedback(feedback_id: str, req: FeedbackRequest, item_context
     preference_context = f" Item context: {item_context}." if item_context else ""
     disposition_context = f" Disposition: {req.disposition}." if req.disposition else ""
     memory_candidates = [f"Candidate priority preference reported by Dr. Shaye: {req.feedback}{disposition_context}{preference_context}"] if req.category == "priority_correction" else []
+    if not actor["owner"]:
+        summary = summary.replace("Dr. Shaye", actor["label"])
+        detail = detail.replace("Dr. Shaye said:", actor["label"] + " said:")
+        learnings, memory_candidates = [], []
     try:
         await EliAgentClient(settings).record(
             workflow,
@@ -79,6 +153,8 @@ async def _deliver_feedback(feedback_id: str, req: FeedbackRequest, item_context
     except Exception:
         return False
     _pending_feedback.pop(feedback_id, None)
+    _actors.pop(feedback_id, None)
+    _cache.pop("dashboard", None)
     return True
 
 
@@ -97,6 +173,9 @@ def _voice_intent(transcript: str) -> VoiceIntent:
 
 
 async def _deliver_voice(command_id: str, transcript: str, intent: VoiceIntent) -> bool:
+    if command_id not in _pending_voice:
+        return True
+    actor = _actors.get(command_id, {"label": "Unverified dashboard user", "owner": False})
     if intent == "priority_feedback":
         workflow = "daily-briefing"
         summary = "Priority guidance received through Talk to Eli"
@@ -110,6 +189,9 @@ async def _deliver_voice(command_id: str, transcript: str, intent: VoiceIntent) 
         summary = "Action requested through Talk to Eli"
         memory_candidates = []
     detail = f"Talk to Eli command {command_id} | intent: {intent} | Dr. Shaye said: {transcript}"
+    if not actor["owner"]:
+        detail = detail.replace("Dr. Shaye said:", actor["label"] + " said:")
+        memory_candidates = []
     try:
         await EliAgentClient(settings).record(
             workflow,
@@ -121,6 +203,8 @@ async def _deliver_voice(command_id: str, transcript: str, intent: VoiceIntent) 
     except Exception:
         return False
     _pending_voice.pop(command_id, None)
+    _actors.pop(command_id, None)
+    _cache.pop("dashboard", None)
     return True
 
 
@@ -142,7 +226,12 @@ def _voice_reply(intent: VoiceIntent, recorded: bool) -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "eli-api", "time": datetime.now(timezone.utc).isoformat()}
+    cached = _cache.get("dashboard")
+    return {"status": "ok", "service": "eli-api", "version": app.version,
+            "time": datetime.now(timezone.utc).isoformat(), "background_refresh_enabled": settings.background_refresh_enabled,
+            "persistent_writeback": bool(settings.dashboard_state_path),
+            "last_refresh_verified": cached[1].live if cached else None,
+            "last_refresh_at": cached[0].isoformat() if cached else None}
 
 
 @app.get("/api/auth/me")
@@ -157,9 +246,12 @@ async def auth_me(user: AuthUser = Depends(require_auth)):
 
 @app.get("/api/status", dependencies=[Depends(require_auth)])
 async def status():
+    payload = await _refresh_dashboard()
     return {
-        "status": "ok",
-        "integrations": await integration_health(settings),
+        "status": "ok" if payload.live else "degraded",
+        "checked_at": payload.generated_at,
+        "integrations": payload.integrations,
+        "eli": payload.eli,
         "live_actions_enabled": settings.live_actions_enabled,
         "pending_feedback": len(_pending_feedback),
         "pending_voice": len(_pending_voice),
@@ -168,20 +260,13 @@ async def status():
 
 @app.get("/api/dashboard", response_model=DashboardPayload, dependencies=[Depends(require_auth)])
 async def dashboard(refresh: bool = False) -> DashboardPayload:
-    if _pending_feedback:
-        await _flush_pending_feedback()
-    if _pending_voice:
-        await _flush_pending_voice()
-    cached = _cache.get("dashboard")
-    if cached and not refresh and datetime.now(timezone.utc) - cached[0] < timedelta(minutes=10):
-        return cached[1]
-    payload = await build_dashboard(settings)
-    _cache["dashboard"] = (datetime.now(timezone.utc), payload)
-    return payload
+    global _last_viewed
+    _last_viewed = datetime.now(timezone.utc)
+    return await _refresh_dashboard(force=refresh)
 
 
 @app.post("/api/feedback", response_model=FeedbackResponse, dependencies=[Depends(require_auth)])
-async def feedback(req: FeedbackRequest):
+async def feedback(req: FeedbackRequest, user: AuthUser = Depends(require_auth)):
     if contains_phi(req.feedback):
         raise HTTPException(422, "Feedback may contain clinical or patient-identifiable content and was not stored")
     if req.item_id and (cached := _cache.get("dashboard")):
@@ -192,8 +277,10 @@ async def feedback(req: FeedbackRequest):
             raise HTTPException(422, "The associated dashboard item is no longer available")
     item_context = _feedback_item_context(req)
     feedback_id = f"feedback_{secrets.token_hex(8)}"
+    _actors[feedback_id] = {"label": "Dr. Shaye" if user.role == "owner" else f"Fabio/operator ({user.email})", "owner": user.role == "owner"}
     _pending_feedback[feedback_id] = (req, item_context)
-    recorded = await _deliver_feedback(feedback_id, req, item_context)
+    async with _writeback_lock:
+        recorded = await _deliver_feedback(feedback_id, req, item_context)
     _cache.pop("dashboard", None)
     if recorded:
         detail = "Dashboard improvement request recorded with Eli as tracked work." if req.category == "dashboard_change" else "Feedback recorded with Eli and applied to the next priority brief."
@@ -215,7 +302,10 @@ async def retry_feedback(feedback_id: str):
     if not pending:
         raise HTTPException(404, "Queued feedback was not found or was already recorded")
     req, item_context = pending
-    recorded = await _deliver_feedback(feedback_id, req, item_context)
+    async with _writeback_lock:
+        if feedback_id not in _pending_feedback:
+            raise HTTPException(404, "Feedback was already recorded")
+        recorded = await _deliver_feedback(feedback_id, req, item_context)
     return FeedbackResponse(
         feedback_id=feedback_id,
         status="recorded" if recorded else "queued",
@@ -284,14 +374,16 @@ async def execute(req: ExecuteRequest):
 
 
 @app.post("/api/voice", response_model=VoiceResponse, dependencies=[Depends(require_auth)])
-async def voice(req: VoiceRequest) -> VoiceResponse:
+async def voice(req: VoiceRequest, user: AuthUser = Depends(require_auth)) -> VoiceResponse:
     if contains_phi(req.transcript):
         raise HTTPException(422, "Voice command may contain clinical or patient-identifiable content")
     transcript = req.transcript.strip()
     intent = _voice_intent(transcript)
     command_id = f"voice_{secrets.token_hex(8)}"
+    _actors[command_id] = {"label": "Dr. Shaye" if user.role == "owner" else f"Fabio/operator ({user.email})", "owner": user.role == "owner"}
     _pending_voice[command_id] = (transcript, intent)
-    recorded = await _deliver_voice(command_id, transcript, intent)
+    async with _writeback_lock:
+        recorded = await _deliver_voice(command_id, transcript, intent)
     _cache.pop("dashboard", None)
     return VoiceResponse(
         command_id=command_id,

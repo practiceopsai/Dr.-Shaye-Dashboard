@@ -14,6 +14,11 @@ describe("SystemStatus", () => {
   it("shows unavailable integrations without breaking the connector list", () => {
     render(<SystemStatus integrations={{}} />);
 
-    expect(screen.getAllByText("Unavailable")).toHaveLength(4);
+    expect(screen.getAllByText("Unavailable")).toHaveLength(8);
+  });
+
+  it("does not turn error strings into connected indicators", () => {
+    render(<SystemStatus integrations={{ eli_agent: "disconnected", anthropic: "false" }} />);
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
   });
 });

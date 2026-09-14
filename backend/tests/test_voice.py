@@ -4,11 +4,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.security import AuthUser
 
 
 @pytest.fixture(autouse=True)
 def voice_state():
-    main.app.dependency_overrides[main.require_auth] = lambda: None
+    main.app.dependency_overrides[main.require_auth] = lambda: AuthUser("owner", "oshaye@gastrobh.com", "Dr. Shaye")
     main._cache.clear()
     main._pending_voice.clear()
     yield

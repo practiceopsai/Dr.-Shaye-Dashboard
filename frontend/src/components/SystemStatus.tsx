@@ -3,6 +3,10 @@ const systems = [
   { key: "preference_sync", label: "Preference sync" },
   { key: "composio", label: "Connected apps" },
   { key: "anthropic", label: "Priority engine" },
+  { key: "gmail", label: "Personal Gmail" },
+  { key: "calendar", label: "Personal calendar" },
+  { key: "memory", label: "Eli memory" },
+  { key: "persona", label: "Eli behavior" },
 ] as const;
 
 export default function SystemStatus({ integrations }: { integrations: Record<string, boolean | string> }) {
@@ -10,7 +14,7 @@ export default function SystemStatus({ integrations }: { integrations: Record<st
     <div className="systems">
       <p>Systems</p>
       {systems.map(system => {
-        const connected = Boolean(integrations[system.key]);
+        const connected = integrations[system.key] === true;
         return (
           <div key={system.key}>
             <i className={connected ? "online" : "offline"} />

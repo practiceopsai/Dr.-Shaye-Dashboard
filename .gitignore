@@ -9,4 +9,6 @@ __pycache__/
 *.pyc
 *.tsbuildinfo
 *.log
+*.sqlite3
+*.sqlite3-*
 .DS_Store

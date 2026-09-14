@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, CalendarDays, CheckCircle2, CircleAlert, Command, LockKeyhole, LogOut, RefreshCw } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
 import FeedbackPanel from "@/components/FeedbackPanel";
@@ -9,6 +9,8 @@ import ScheduleCalendar from "@/components/ScheduleCalendar";
 import SystemStatus from "@/components/SystemStatus";
 import ViewNav from "@/components/ViewNav";
 import VoiceCommand from "@/components/VoiceCommand";
+import EliStatusPanel from "@/components/EliStatusPanel";
+import { isCurrent } from "@/lib/freshness";
 import { api, AuthUser, Card, Dashboard, GOOGLE_CREDENTIAL_KEY, Lane } from "@/lib/api";
 import { cardsForView, ViewKey, viewLabels } from "@/lib/views";
 
@@ -33,6 +35,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState<ViewKey>("today");
+  const [clock, setClock] = useState(Date.now());
+  const inFlight = useRef(false);
+  const current = isCurrent(data, new Date(clock));
 
   const signOut = useCallback(() => {
     sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);
@@ -70,20 +75,37 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
     const sync = () => {
-      if (document.visibilityState === "visible") load(true);
+      if (document.visibilityState === "visible") void load(false);
     };
-    const interval = window.setInterval(sync, 5 * 60 * 1000);
-    return () => window.clearInterval(interval);
+    const interval = window.setInterval(sync, 60 * 1000);
+    const ticker = window.setInterval(() => setClock(Date.now()), 15000);
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener("online", sync);
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(ticker);
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("online", sync);
+    };
   }, [user]);
 
   async function load(refresh = true) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const credential = sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);
     setLoading(true);
     setError("");
     try {
-      setData(await api.dashboard(refresh));
+      const updated = await api.dashboard(refresh);
+      if (sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY) === credential) setData(updated);
+      setClock(Date.now());
     } catch (requestError) {
+      setData(null);
       setError(requestError instanceof Error ? requestError.message : "Unable to load command center");
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }
@@ -96,6 +118,7 @@ export default function Home() {
       const authenticatedUser = await api.me();
       setUser(authenticatedUser);
       setData(await api.dashboard(false));
+      setClock(Date.now());
     } catch (requestError) {
       sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);
       setError(requestError instanceof Error ? requestError.message : "Unable to sign in");
@@ -104,7 +127,7 @@ export default function Home() {
     }
   }
 
-  const visibleCards = useMemo(() => cardsForView(data?.cards || [], activeView), [data, activeView]);
+  const visibleCards = useMemo(() => cardsForView(current ? data?.cards || [] : [], activeView), [data, activeView, current]);
   const grouped = useMemo(
     () => Object.fromEntries(lanes.map(lane => [lane.key, visibleCards.filter(card => card.lane === lane.key)])) as Record<Lane, Card[]>,
     [visibleCards],
@@ -136,7 +159,7 @@ export default function Home() {
       <aside>
         <div className="brand"><span><Command size={20} /></span><div><b>Eli</b><small>Command Center</small></div></div>
         <ViewNav current={activeView} onChange={setActiveView} className="side-nav" idPrefix="side" />
-        <SystemStatus integrations={data?.integrations || {}} />
+        <SystemStatus integrations={current ? data?.integrations || {} : {}} />
         <div className="privacy"><LockKeyhole size={15} /><p><b>Private by design</b><span>No patient data. Every external action requires exact approval.</span></p></div>
       </aside>
 
@@ -144,8 +167,8 @@ export default function Home() {
         <header className="workspace-header">
           <div>
             <p className="date">{new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</p>
-            <h1>{data?.greeting || "Good morning, Dr. Shaye."}</h1>
-            <p className="focus">{data?.focus || "Loading today's operating picture…"}</p>
+            <h1>{current ? data?.greeting : "Welcome, Dr. Shaye."}</h1>
+            <p className="focus">{current ? data?.focus : "Checking today's operating picture…"}</p>
           </div>
           <div className="header-actions"><VoiceCommand onChanged={() => load(true)} /><button className="refresh" onClick={() => load(true)} disabled={loading} aria-label="Refresh command center"><RefreshCw size={16} className={loading ? "spin" : ""} /></button><button className="refresh" onClick={signOut} aria-label={`Sign out ${user.email}`} title={`Signed in as ${user.email}`}><LogOut size={16} /></button></div>
         </header>
@@ -153,19 +176,21 @@ export default function Home() {
         <ViewNav current={activeView} onChange={setActiveView} className="mobile-nav" idPrefix="mobile" />
 
         {error && <div className="banner error-banner"><CircleAlert size={18} /><div><b>Couldn&apos;t load the live brief</b><span>{error}</span></div></div>}
+        {data && !current && <div className="banner error-banner" role="status"><CircleAlert size={18} /><div><b>This brief has expired</b><span>Refreshing current information. Previous actions are hidden until verified.</span></div></div>}
         {data?.warnings.map(warning => <div className="banner" key={warning}><CircleAlert size={16} /><span>{warning}</span></div>)}
 
         <div className="summary-row">
-          <div><Activity size={18} /><span><b>{data?.cards.filter(card => ["P0", "P1", "P2"].includes(card.priority)).length || 0}</b> decisions need attention</span></div>
-          <div><CalendarDays size={18} /><span><b>{data?.cards.filter(card => card.lane === "protect").length || 0}</b> protected outcomes</span></div>
-          <div className={data?.live ? "live" : "standby"}><i />{data?.live ? "Live context" : "Safe fallback"}</div>
+          <div><Activity size={18} /><span><b>{current ? data?.cards.filter(card => ["P0", "P1", "P2"].includes(card.priority)).length || 0 : "—"}</b> decisions need attention</span></div>
+          <div><CalendarDays size={18} /><span><b>{current ? data?.cards.filter(card => card.lane === "protect").length || 0 : "—"}</b> protected outcomes</span></div>
+          <div className={current && data?.live ? "live" : "standby"}><i />{current && data?.live ? "Verified connections" : "Information incomplete"}</div>
         </div>
 
-        <FeedbackPanel cards={data?.cards || []} onChanged={() => load(true)} />
+        <EliStatusPanel status={current ? data?.eli : undefined} />
+        <FeedbackPanel cards={current ? data?.cards || [] : []} onChanged={() => load(true)} />
 
         {loading && !data ? (
           <div className="loading-grid">{[1, 2, 3].map(item => <div key={item} />)}</div>
-        ) : (
+        ) : !current ? <div className="view-empty"><CircleAlert size={22} /><b>Current priorities are not available yet.</b><span>The dashboard refreshes automatically when connected.</span></div> : (
           <section id={`view-${activeView}`} role="tabpanel" aria-label={viewLabels[activeView]}>
             {activeView === "schedule" ? (
               <ScheduleCalendar items={data?.calendar_items || []} cards={data?.cards || []} onChanged={() => load(true)} />
@@ -194,7 +219,7 @@ export default function Home() {
           </section>
         )}
 
-        <footer><span>Last synthesized {data ? new Date(data.generated_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—"}</span><span>Three priorities max · Source-aware · Approval-gated</span></footer>
+        <footer><span>Last checked {data ? new Date(data.generated_at).toLocaleString() : "Not verified"}</span><span>Refreshes every five minutes · Exact approvals</span></footer>
       </section>
     </main>
   );

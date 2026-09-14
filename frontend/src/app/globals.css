@@ -91,3 +91,15 @@ footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:5px 20px;co
   .eli-chat{inset:8px;width:auto;height:auto;max-height:none;border-radius:12px}.eli-chat-messages{padding:13px}
 }
 @media(max-width:360px){.mobile-nav button{font-size:8px}.mobile-nav button svg{width:16px}.workspace{padding-inline:10px}}
+/* Live state remains readable on the dashboard and an iPhone viewport. */
+.eli-detail { margin: 16px 0; padding: 16px 20px; background: #fff; border: 1px solid #dddfe4; border-radius: 14px; color: #303844; }
+.eli-detail summary { cursor: pointer; font-weight: 600; }
+.eli-detail summary span { display: block; margin-top: 5px; color: #677281; font-size: 12px; font-weight: 400; }
+.eli-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.eli-detail h3 { font-size: 14px; margin: 10px 0; }
+.eli-detail p, .eli-detail li { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.eli-detail small { color: #677281; }
+.eli-detail ul { padding-left: 20px; }
+.eli-detail li b { white-space: nowrap; }
+.ranking-note { border-top: 1px solid #dddfe4; padding-top: 14px; }
+@media (max-width: 640px) { .eli-detail-grid { grid-template-columns: 1fr; } }

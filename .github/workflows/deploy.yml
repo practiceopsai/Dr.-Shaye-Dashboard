@@ -10,7 +10,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Test backend
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt pytest
+          python -m pytest -q
+      - name: Test and build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
   deploy:
+    needs: verify
     name: Deploy ${{ matrix.service }}
     runs-on: ubuntu-latest
     strategy:

@@ -2,12 +2,12 @@ import json
 import logging
 import re
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from anthropic import AsyncAnthropic, BadRequestError
 from .config import Settings
-from .integrations import ComposioMCPClient, EliAgentClient, integration_health
-from .models import ActionSpec, CalendarItem, DashboardPayload, PriorityCard
+from .integrations import ComposioMCPClient, EliAgentClient
+from .models import CalendarItem, DashboardPayload, PriorityCard
 
 
 SYSTEM = """You are Eli, Dr. Omid Shaye's action-oriented Chief of Staff dashboard.
@@ -69,7 +69,7 @@ def _eli_agent_text(value: object) -> str:
 def _rag_sync_ok(context: str) -> bool:
     """Only report preference sync when the agent confirms a successful RAG query."""
     match = re.search(r"RAG queries succeeded:\s*(\d+)/(\d+)", context)
-    return bool(match and int(match.group(1)) > 0)
+    return bool(match and int(match.group(1)) == int(match.group(2)) and int(match.group(2)) > 0)
 
 
 def _extract_json(text: str) -> dict:
@@ -121,8 +121,8 @@ def _validate_dashboard_shape(parsed: dict) -> dict:
             raise ValueError("A dashboard card was not valid JSON") from exc
     if not isinstance(cards, list) or not all(isinstance(card, dict) for card in cards):
         raise ValueError("Dashboard cards must be an array of objects")
-    if not 1 <= len(cards) <= 6:
-        raise ValueError("Dashboard must contain between one and six cards")
+    if len(cards) > 6:
+        raise ValueError("Dashboard must contain at most six cards")
     normalized["cards"] = cards
     normalized["greeting"] = str(normalized.get("greeting") or "Good morning, Dr. Shaye.")
     normalized["focus"] = str(normalized.get("focus") or "Protect attention for what matters most.")
@@ -261,28 +261,37 @@ def _link_calendar_priorities(items: list[CalendarItem], cards: list[PriorityCar
     ]
 
 
-def fallback_cards() -> list[PriorityCard]:
-    return [
-        PriorityCard(id="refresh-connections", priority="P2", lane="now", category="System", title="Confirm today's operating picture", context="Live priority synthesis is temporarily unavailable. Refresh the Eli Agent and connected services before acting on stale context.", consequence="The dashboard may miss a new deadline or commitment.", source="system health", mission_alignment="unknown", action=ActionSpec(label="Ask Eli Agent to refresh the daily brief")),
-        PriorityCard(id="protected-focus", priority="P3", lane="protect", category="Focus", title="Protect one important, non-urgent outcome", context="Reserve focused time for family, Torah, health, healing, teaching, relationship repair, or strategic work.", consequence="Urgency will otherwise displace high-value work.", source="priority-and-escalation policy", mission_alignment="aligned", action=ActionSpec(label="Ask Eli Agent to propose a focus block")),
-    ]
-
-
 async def build_dashboard(settings: Settings) -> DashboardPayload:
-    health = await integration_health(settings)
-    health["preference_sync"] = False
+    health = {"eli_agent": False, "composio": False, "anthropic": False, "preference_sync": False,
+              "gmail": False, "calendar": False, "memory": False, "persona": False}
+    eli = {}
+    now = datetime.now(timezone.utc)
     warnings: list[str] = []
     cards: list[PriorityCard]
     calendar_items: list[CalendarItem] = []
     live = False
     try:
-        context, signal_result = await asyncio.gather(
-            EliAgentClient(settings).context(),
-            ComposioMCPClient(settings).personal_signals(),
+        composio = ComposioMCPClient(settings)
+        snapshot, signal_result = await asyncio.gather(
+            EliAgentClient(settings).snapshot(),
+            composio.personal_signals(),
             return_exceptions=True,
         )
-        if isinstance(context, Exception):
-            raise context
+        if isinstance(snapshot, Exception):
+            raise snapshot
+        context = snapshot["context"]
+        eli = snapshot["summary"]
+        health["eli_agent"] = True
+        health.update(composio.read_health)
+        health["composio"] = all(composio.read_health.values())
+        warnings.extend(composio.read_warnings)
+        health["memory"] = eli.get("memory", {}).get("status") == "healthy" and _recent(eli.get("memory", {}).get("checked_at"), now)
+        health["persona"] = eli.get("persona", {}).get("status") == "healthy" and _recent(eli.get("persona", {}).get("checked_at"), now)
+        for name in ("memory", "persona"):
+            if not health[name]:
+                warnings.append(f"Eli's {name} status is unavailable or older than 15 minutes.")
+        if not eli.get("healthy"):
+            warnings.append("Eli is running with maintenance items awaiting review. See Eli status for details.")
         if not context.strip():
             raise RuntimeError("Eli Agent returned no context")
         health["preference_sync"] = _rag_sync_ok(context)
@@ -295,9 +304,11 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
             else:
                 signals = str(signal_result or "")
             signals = signals or "No relevant personal inbox or calendar signals were found."
-        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        user_prompt = f"Today is {datetime.now().astimezone().isoformat()}. Build the dashboard from the sources below. Vault material may be stale. Personal signals are metadata only and may be incomplete. Cite either the vault file/heading or personal inbox/calendar in source.\n\n--- ELI AGENT CONTEXT ---\n{context}\n\n--- PERSONAL SIGNALS (NO MESSAGE BODIES OR EVENT DESCRIPTIONS) ---\n{signals}"
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=60, max_retries=1)
+        local_now = now.astimezone(ZoneInfo(settings.dashboard_timezone))
+        user_prompt = f"Today is {local_now.isoformat()}. Build the dashboard from the sources below. Use dated evidence. Old open loops, past reminders and historical run results do not establish that work is still open today. Omit completed, cancelled, superseded, or unverified past items. An old standing preference can remain valid; an old briefing is not today's state. Only current authoritative policy and confirmed preferences may guide behavior; examples and proposed persona rewrites are not facts or permissions. Personal signals are metadata only and may be incomplete. Cite the vault file/heading or personal inbox/calendar in source.\n\n--- ELI AGENT CONTEXT ---\n{context}\n\n--- PERSONAL SIGNALS (NO MESSAGE BODIES OR EVENT DESCRIPTIONS) ---\n{signals}"
         parsed = await _synthesize(client, settings.anthropic_model, user_prompt)
+        health["anthropic"] = True
         cards = []
         for item in parsed["cards"][:6]:
             try:
@@ -305,23 +316,34 @@ async def build_dashboard(settings: Settings) -> DashboardPayload:
             except Exception:
                 logger.warning("Skipping one malformed priority card", exc_info=True)
         cards = _enforce_priority_policy(cards)
-        if not cards:
+        if parsed["cards"] and not cards:
             raise ValueError("Model returned no valid priority cards")
         greeting = _eli_agent_text(parsed.get("greeting", "Good morning, Dr. Shaye."))
         focus = _eli_agent_text(parsed.get("focus", "Protect attention for what matters most."))
-        live = bool(cards and health.get("eli_agent") and health.get("anthropic"))
+        live = all(health.values()) and not composio.read_warnings
     except Exception as exc:
         logger.exception("Live priority synthesis failed")
-        cards = fallback_cards()
+        cards = []
         greeting = "Good morning, Dr. Shaye."
-        focus = "Live synthesis needs attention; showing safe standing priorities."
+        focus = "Today's priorities could not be verified. Refresh to try again."
         warnings.append(f"Live synthesis unavailable: {type(exc).__name__}")
     if not health.get("composio"):
-        warnings.append("Composio is offline; external actions will remain queued.")
+        warnings.append("Some connected accounts could not be verified; the brief may be incomplete.")
     if not health.get("eli_agent"):
         warnings.append("Eli Agent is offline; preference and action write-back is unavailable.")
     calendar_items = _link_calendar_priorities(calendar_items, cards)
     calendar_items.extend(
         item for card in cards if (item := _priority_calendar_item(card, settings.dashboard_timezone))
     )
-    return DashboardPayload(generated_at=datetime.now().astimezone(), live=live, greeting=greeting, focus=focus, cards=cards, calendar_items=calendar_items, admin_count=sum(c.priority == "P4" for c in cards), integrations=health, warnings=warnings)
+    generated = datetime.now(timezone.utc)
+    return DashboardPayload(generated_at=generated, expires_at=generated + timedelta(seconds=settings.dashboard_refresh_seconds),
+                            timezone=settings.dashboard_timezone, eli=eli, live=live, greeting=greeting, focus=focus, cards=cards,
+                            calendar_items=calendar_items, admin_count=sum(c.priority == "P4" for c in cards), integrations=health, warnings=warnings)
+
+
+def _recent(value: str | None, now: datetime) -> bool:
+    try:
+        age = (now - datetime.fromisoformat(value.replace("Z", "+00:00"))).total_seconds()
+        return -60 <= age <= 900
+    except (ValueError, TypeError, AttributeError):
+        return False

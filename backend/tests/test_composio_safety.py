@@ -1,6 +1,8 @@
 import pytest
+import asyncio
 
 from app.integrations import ComposioMCPClient
+from app.config import Settings
 
 
 def test_gmail_write_contract_is_narrow_and_normalized():
@@ -47,3 +49,28 @@ def test_calendar_event_becomes_safe_structured_metadata():
 def test_calendar_event_without_a_date_or_with_clinical_content_is_omitted():
     assert ComposioMCPClient._calendar_item({"summary": "Undated", "start": {}}) is None
     assert ComposioMCPClient._calendar_item({"summary": "Patient clinic visit", "start": {"date": "2026-08-25"}}) is None
+
+
+def test_reads_follow_exact_page_tokens_and_reject_preview_substitution():
+    client = ComposioMCPClient(Settings(composio_personal_gmail_account="mail", composio_personal_calendar_account="calendar"))
+    calendar_calls = []
+    async def execute(tools, step):
+        tool = tools[0]
+        if tool["tool_slug"].startswith("GMAIL"):
+            return [{"tool_slug": tool["tool_slug"], "response": {"successful": True, "data": {"messages": []}}}]
+        args = tool["arguments"]
+        calendar_calls.append(dict(args))
+        if len(calendar_calls) == 1:
+            return [{"response": {"successful": True, "data_preview": {"items": []}}}]
+        if "pageToken" not in args:
+            data = {"items": [{"id":"one","summary":"Family dinner","start":{"date":"2026-09-15"}}], "nextPageToken":"opaque-next"}
+        else:
+            assert args["pageToken"] == "opaque-next"
+            data = {"items": [{"id":"two","summary":"Family walk","start":{"date":"2026-09-16"}}]}
+        return [{"response": {"successful": True, "data": data}}]
+    client._multi_execute = execute
+    _, items = asyncio.run(client.personal_signals())
+    assert [i.id for i in items] == ["one", "two"]
+    assert calendar_calls[1]["maxResults"] < calendar_calls[0]["maxResults"]
+    assert client.read_health == {"gmail": True, "calendar": True}
+    assert not client.read_warnings

@@ -45,6 +45,9 @@ class CalendarItem(BaseModel):
 
 class DashboardPayload(BaseModel):
     generated_at: datetime
+    expires_at: datetime | None = None
+    timezone: str = "America/Los_Angeles"
+    eli: dict[str, Any] = Field(default_factory=dict)
     live: bool
     greeting: str
     focus: str

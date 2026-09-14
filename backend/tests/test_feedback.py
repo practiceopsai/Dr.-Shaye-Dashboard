@@ -4,11 +4,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.security import AuthUser
 
 
 @pytest.fixture(autouse=True)
 def feedback_state():
-    main.app.dependency_overrides[main.require_auth] = lambda: None
+    main.app.dependency_overrides[main.require_auth] = lambda: AuthUser("owner", "oshaye@gastrobh.com", "Dr. Shaye")
     main._cache.clear()
     main._pending_feedback.clear()
     yield
@@ -168,3 +169,16 @@ def test_disposition_requires_an_item():
         json={"category": "priority_correction", "disposition": "not_relevant", "feedback": "Remove this."},
     )
     assert response.status_code == 422
+
+
+def test_operator_feedback_cannot_become_omids_personal_preference(monkeypatch):
+    calls = []
+    class Recorder:
+        def __init__(self, settings): pass
+        async def record(self, *args, **kwargs): calls.append((args, kwargs))
+    monkeypatch.setattr(main, "EliAgentClient", Recorder)
+    main.app.dependency_overrides[main.require_auth] = lambda: AuthUser("operator", "fabio@practiceops.ai", "Fabio")
+    response = TestClient(main.app).post("/api/feedback", json={"category": "priority_correction", "feedback": "Rank the UI repair first"})
+    assert response.status_code == 200
+    assert calls[0][1]["memory_candidates"] == []
+    assert "Fabio/operator" in calls[0][0][2][0]

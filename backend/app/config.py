@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     google_allowed_emails: str = "oshaye@gastrobh.com,fabio@practiceops.ai"
     allowed_origins: str = "http://localhost:3000"
     live_actions_enabled: bool = False
+    background_refresh_enabled: bool = False
+    dashboard_refresh_seconds: int = 300
+    dashboard_state_path: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
