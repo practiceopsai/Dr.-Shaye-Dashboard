@@ -31,6 +31,8 @@ npx expo start --dev-client
 
 An exported JavaScript/Hermes bundle is a validation artifact. An installable iPhone application additionally needs an Apple-signed native build.
 
+The native iOS simulator build for source `c2d145a` passed on September 14, 2026: [EAS build](https://expo.dev/accounts/fvarenss-team/projects/fabio/builds/2a8edc99-cc55-4dae-93fe-ec9dabceba11). This verifies native compilation without Apple signing; a simulator artifact cannot be installed on an iPhone. Production signing, App Store Connect submission, and actual-device acceptance are still pending.
+
 ## Ownership and release
 
 - Expo project: `@fvarenss-team/fabio`, ID `3f3cfa91-36a6-4b87-9971-c8efe09e5f3e`. The existing Expo project slug is retained; the installed app name is **Eli Command Center**.
@@ -44,6 +46,8 @@ One-time login and managed signing setup:
 npx eas-cli@latest login --no-browser
 npx eas-cli@latest credentials:configure-build --platform ios --profile production
 ```
+
+On September 14, EAS CLI 24.3.0's Apple-password authentication fails with `iTunes service key is empty` because its Apple endpoint changed. The release is awaiting a Team App Store Connect API key as the supported signing alternative. Sign in at `https://appstoreconnect.apple.com/login`, then navigate to Users and Access > Integrations > App Store Connect API > Team Keys. API access may first require an Account Holder request. Keep the downloaded `.p8` private and outside this repository. Windows is supported for the cloud build/release workflow; a local Mac is not required.
 
 Build and submit:
 
