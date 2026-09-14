@@ -33,7 +33,7 @@ npx expo start --dev-client
 
 An exported JavaScript/Hermes bundle is a validation artifact. An installable iPhone application additionally needs an Apple-signed native build.
 
-The native iOS simulator build for source `c2d145a` passed on September 14, 2026: [EAS build](https://expo.dev/accounts/fvarenss-team/projects/fabio/builds/2a8edc99-cc55-4dae-93fe-ec9dabceba11). The first signed production build, version 1.0.0 (2), also passed: [production build](https://expo.dev/accounts/fvarenss-team/projects/fabio/builds/8909fcf8-d96b-446a-bb0c-fea47d94fce3). Its TestFlight upload has been scheduled. Sample mode requires the subsequent build; actual-device acceptance and Apple's external beta review remain pending.
+Release verification, September 14, 2026: all 29 native-app tests, TypeScript, contract checks, release configuration, and iOS export passed. Signed production version **1.0.0 (5)** compiled successfully: [EAS build](https://expo.dev/accounts/fvarenss-team/projects/fabio/builds/7adc20c7-873e-4569-bcf2-0016080ca830), source `c4ec902`. The signed archive contains sample mode and the required privacy descriptions. Its embedded runtime, `ab9a48d12891d8ee58554d2f71651aa4aa03e70a`, matches the published production update, and the update service returned that manifest successfully. **Apple validated the build and enabled internal TestFlight testing.** The account holder's authorized invitation was sent. External beta review is `WAITING_FOR_REVIEW`; the limited sharing link remains private. Actual-device sign-in and acceptance still need confirmation.
 
 ## Ownership and release
 
@@ -61,6 +61,10 @@ npx eas-cli@latest submit --platform ios --profile production --id <finished-bui
 
 The `Build iPhone for TestFlight` GitHub workflow performs checks before building, then submits that exact finished build. The Expo automation token is configured in the `EXPO_TOKEN` repository secret. Managed iOS signing and App Store Connect submission credentials are configured. Automatic TestFlight group creation is disabled so release automation does not invite every App Store Connect administrator. Tester enrollment is managed separately.
 
+When EAS Submit was delayed in its queue, the signed archive was uploaded using Apple's documented [Build Uploads API](https://developer.apple.com/documentation/appstoreconnectapi/build-uploads). This route also works from Windows: reserve a build and IPA file, upload Apple's assigned parts, then commit the file checksum. Cancel redundant queued submissions before switching routes. A completed upload still needs Apple's processing and validation before TestFlight can distribute it.
+
+ExpoFileSystem links a Photos authorization API, so Apple requires `NSPhotoLibraryUsageDescription` even though Eli never requests photo permission or reads the library. The configured text states that photo access is unnecessary. Keep this metadata when updating the SDK unless the linked API is removed.
+
 ## Fresh data and software updates
 
 The app reloads on foreground, network recovery, pull-to-refresh, successful mutation, and every minute while active. The server’s `generated_at`, `expires_at`, and principal timezone govern freshness. Expired or unavailable data cannot be approved. The backend prepares daily briefs independently of iOS background execution.
@@ -72,6 +76,8 @@ npx eas-cli@latest update --channel production --platform ios --environment prod
 ```
 
 The `Publish compatible iPhone update` workflow automatically publishes successful native-app checks for pushes to this repository’s main branch. It publishes the exact verified commit and does not accept pull-request or fork runs. Native dependency/configuration changes produce a different runtime and require a new Apple-signed build. TestFlight/App Store automatic updates depend on the user’s Apple settings. Optional end-to-end EAS Update signing can be configured with `certs/update-certificate.pem`; its private key belongs outside this repository. Expo currently restricts that extra signing feature to paid Production/Enterprise plans. Standard updates use Expo’s authenticated publishing and HTTPS delivery.
+
+`.gitattributes` keeps native configuration files on LF line endings across Windows and CI. This prevents identical configuration values from producing incompatible runtime fingerprints solely because of checkout formatting. Compare the signed app's embedded fingerprint with the published update when validating a release.
 
 ## Device acceptance before broad distribution
 

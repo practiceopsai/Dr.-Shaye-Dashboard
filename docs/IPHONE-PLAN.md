@@ -2,7 +2,7 @@
 
 Decision recorded September 14, 2026: distribute through TestFlight or the App Store. A Safari Home Screen installation is not the chosen release route.
 
-Implementation update, September 14, 2026: the native application exists in `mobile/`, with targeted tests, a successful iOS JavaScript export, and GitHub verification. Both the native iOS simulator build and the first signed production build compiled successfully on EAS. Production build 1.0.0 (2) is `8909fcf8-d96b-446a-bb0c-fea47d94fce3`; its TestFlight upload has been scheduled. Apple signing and App Store Connect submission credentials are configured. Production EAS updates are connected to successful checks on main and have published successfully. Privacy and support pages are deployed. A subsequent binary will include the visible sample mode for review. Actual-device acceptance and Apple's external beta review remain pending. See `mobile/README.md` for release commands.
+Implementation update, September 14, 2026: the native application exists in `mobile/`, with 29 passing tests, TypeScript and contract checks, iOS export, and successful native compilation. Signed production version 1.0.0 (5), build `7adc20c7-873e-4569-bcf2-0016080ca830`, includes the visible sample preview and required privacy metadata. **Apple validated the build, enabled internal TestFlight testing, and accepted the account holder's invitation request.** External beta review is `WAITING_FOR_REVIEW`; the limited sharing link is kept private. Actual-device sign-in and acceptance still need confirmation. The production update service returns a manifest matching the signed app's embedded runtime; Windows/CI line endings are normalized to preserve this compatibility. Privacy and support pages are deployed. See `mobile/README.md` for release commands.
 
 ## Architecture
 
@@ -37,9 +37,9 @@ Do not promise that every native feature can be silently replaced. Runtime compa
 - Apple Developer membership, agreements, app record, managed signing credentials, and submission API key are configured. The supported API-key route resolved the earlier password-based signing failure.
 - Bundle identifier `ai.practiceops.eli` and the dedicated iOS OAuth client have been configured in the existing Google project.
 - Expo ownership is `fvarenss-team`, project `fabio`. The account, public app identifiers, update channels, and GitHub automation secret are configured.
-- The account holder confirmed the destination and authorized their own TestFlight invitation. Dr. Shaye's access is planned through a limited shareable external beta link after review.
+- The account holder's authorized TestFlight invitation has been sent. Dr. Shaye's access uses a limited shareable external beta link after Apple's pending review. No invitation was sent to Dr. Shaye by the release tooling.
 
-The first TestFlight upload is scheduled. TestFlight builds expire after 90 days, so release maintenance is required even during a private beta. Actual-device acceptance and Apple's beta review remain separate from JavaScript export and unit/component tests. The sample preview is visible to everyone and uses fictional data without granting access to production services.
+The signed release uses Apple's documented Build Uploads API after redundant EAS submissions were canceled during a queue delay. TestFlight builds expire after 90 days, so release maintenance is required even during a private beta. Actual-device acceptance and Apple's beta review remain separate from JavaScript export and unit/component tests. The sample preview is visible to everyone and uses fictional data without granting access to production services.
 
 ## Primary references
 
