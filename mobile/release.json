@@ -1,0 +1,9 @@
+{
+  "apiUrl": "https://backend-production-b5792.up.railway.app",
+  "googleWebClientId": "325368962117-0f5bjaodhghpj0miqg11ptdgor9cutpo.apps.googleusercontent.com",
+  "googleIosClientId": "325368962117-3p3b3m3frnm4vlv8m7r1geh5p2pgvcjt.apps.googleusercontent.com",
+  "projectId": "3f3cfa91-36a6-4b87-9971-c8efe09e5f3e",
+  "owner": "fvarenss-team",
+  "appleTeamId": "2VY2A3RWFV",
+  "bundleIdentifier": "ai.practiceops.eli"
+}

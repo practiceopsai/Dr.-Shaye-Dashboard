@@ -3,6 +3,7 @@ name: Deploy to Railway
 on:
   push:
     branches: [main]
+    paths: ["backend/**", "frontend/**", ".github/workflows/deploy.yml"]
   workflow_dispatch:
 
 concurrency:

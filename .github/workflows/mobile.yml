@@ -1,0 +1,33 @@
+name: Verify iPhone app
+on:
+  push:
+    paths: ["mobile/**", "frontend/src/lib/api.ts", ".github/workflows/mobile.yml"]
+  pull_request:
+    paths: ["mobile/**", "frontend/src/lib/api.ts", ".github/workflows/mobile.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: node scripts/sync-contract.cjs --check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run release:check
+      - run: npm run export:ios -- --max-workers 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-javascript-bundle
+          path: mobile/dist
+          retention-days: 7
