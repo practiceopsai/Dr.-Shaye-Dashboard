@@ -12,6 +12,7 @@ describe("freshness", () => {
     expect(isCurrent(null)).toBe(false);
     expect(isCurrent({ ...brief, expires_at: undefined })).toBe(false);
     expect(isCurrent({ ...brief, expires_at: "bad" })).toBe(false);
+    expect(isCurrent({ ...brief, generated_at: "bad" }, new Date("2026-09-14T06:59:00Z"))).toBe(false);
     expect(isCurrent(brief, new Date("2026-09-14T07:04:00Z"))).toBe(false);
   });
 });

@@ -75,6 +75,7 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
     const sync = () => {
+      setClock(Date.now());
       if (document.visibilityState === "visible") void load(false);
     };
     const interval = window.setInterval(sync, 60 * 1000);
