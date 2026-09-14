@@ -1,0 +1,4 @@
+# Native configuration fingerprints must be identical on Windows and CI.
+mobile/*.json text eol=lf
+mobile/*.js text eol=lf
+mobile/scripts/*.cjs text eol=lf
