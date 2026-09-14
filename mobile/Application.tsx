@@ -12,6 +12,7 @@ import type { AuthUser, Card } from './src/types';
 import { Composer } from './src/Composer';
 import { ApprovalSheet } from './src/ApprovalSheet';
 import { GoogleButton } from './src/GoogleButton';
+import { createSampleApi, sampleNotice, sampleUser } from './src/sample';
 import { Commitments, EliStatus, LegalLinks, Schedule, Today } from './src/screens';
 import { displayTime } from './src/freshness';
 import { Body, Button, colors, Empty, Heading, Icon, type IconName, Kicker, Notice, Panel, s, Small, Title } from './src/ui';
@@ -26,7 +27,7 @@ const tabs: { key: Tab; label: string; title: string; icon: IconName }[] = [
   { key: 'eli', label: 'Eli', title: 'Eli’s current state', icon: 'leaf-outline' },
 ];
 
-function Settings({ user, logout, close }: { user: AuthUser; logout: () => void; close: () => void }) {
+function Settings({ user, logout, close, sample = false }: { user: AuthUser; logout: () => void; close: () => void; sample?: boolean }) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [available, setAvailable] = useState(false);
@@ -46,13 +47,13 @@ function Settings({ user, logout, close }: { user: AuthUser; logout: () => void;
     catch { setMessage('The app could not restart safely. Try again after closing your drafts.'); setBusy(false); }
   }
   return <View style={s.gap}>
-    <Panel><Kicker>Signed in</Kicker><Heading>{user.name}</Heading><Body>{user.email}</Body><Small>{user.role === 'owner' ? 'Principal' : 'Chief of staff'}</Small></Panel>
+    <Panel><Kicker>{sample ? 'Sample account' : 'Signed in'}</Kicker><Heading>{user.name}</Heading><Body>{user.email}</Body><Small>{user.role === 'owner' ? 'Principal' : 'Chief of staff'}</Small></Panel>
     <Panel><Kicker>Updates</Kicker><Body>Eli’s data is shared across your devices. The brief refreshes while you use the app and when you return.</Body><Small>Version 1.0.0 · Native changes arrive through TestFlight or the App Store.</Small><Button secondary label="Check for app updates" busy={busy} onPress={() => { void check(); }} />{message ? <Notice>{message}</Notice> : null}{available && <Button label="Restart to apply update" busy={busy} onPress={() => { void apply(); }} />}</Panel>
-    <LegalLinks /><Button secondary destructive label="Sign out" icon="log-out-outline" onPress={logout} /><Button label="Done" onPress={close} />
+    <LegalLinks /><Button secondary destructive label={sample ? 'Exit sample mode' : 'Sign out'} icon="log-out-outline" onPress={logout} /><Button label="Done" onPress={close} />
   </View>;
 }
 
-export function CommandCenter({ user, api, logout }: { user: AuthUser; api: Api; logout: () => void }) {
+export function CommandCenter({ user, api, logout, sample = false }: { user: AuthUser; api: Api; logout: () => void; sample?: boolean }) {
   const state = useDashboard(api);
   const [tab, setTab] = useState<Tab>('today');
   const [sheet, setSheet] = useState<Sheet | null>(null);
@@ -63,6 +64,7 @@ export function CommandCenter({ user, api, logout }: { user: AuthUser; api: Api;
   const title = tab === 'today' ? (current?.greeting || 'Your day, in focus.') : tabs.find(value => value.key === tab)!.title;
   return <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
     <View style={styles.header}><View style={s.row}><View style={styles.mark}><Icon name="leaf-outline" color={colors.white} size={24} /></View><View><Text style={styles.brand}>Eli</Text><Small>COMMAND CENTER</Small></View></View><Pressable accessibilityRole="button" accessibilityLabel="Account and settings" onPress={() => setSheet({ type: 'settings' })} style={styles.avatar}><Text style={{ color: colors.green, fontWeight: '700' }}>{user.name.slice(0, 1).toUpperCase()}</Text></Pressable></View>
+    {sample && <View style={{ paddingHorizontal: 22, paddingTop: 10, gap: 8 }}><Notice>{sampleNotice}</Notice><Button secondary label="Exit sample mode" onPress={logout} /></View>}
     <ScrollView ref={scroll} contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={state.loading} onRefresh={() => { void state.refresh(true); }} tintColor={colors.green} />}>
       <View style={{ gap: 8 }}><Kicker>{new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: current?.timezone || 'America/Los_Angeles' }).format(state.now)}</Kicker><Title>{title}</Title></View>
       <View style={s.between}><View style={[s.row, { flex: 1 }]}><Icon name="ellipse" size={7} color={current?.live ? colors.green : colors.gold} /><Small>{current ? `Updated ${displayTime(current.generated_at, current.timezone)}` : state.online ? 'Waiting for a current brief' : 'Offline'}</Small></View><Pressable accessibilityRole="button" accessibilityLabel="Refresh brief" onPress={() => { void state.refresh(true); }} style={styles.refresh}><Icon name="refresh-outline" size={19} /></Pressable></View>
@@ -71,7 +73,7 @@ export function CommandCenter({ user, api, logout }: { user: AuthUser; api: Api;
       {!current ? <Empty title={state.loading ? 'Preparing your brief' : 'A current brief is needed'} message={state.loading ? 'Checking Eli, your priorities, and your calendar.' : 'Pull down to refresh. Expired actions stay hidden until fresh information arrives.'} icon={state.loading ? 'sync-outline' : 'cloud-offline-outline'} /> : <>
         {!current.live && <Notice danger>Some sources could not be verified. Approvals are paused until a complete brief is available.</Notice>}
         {current.warnings.map((warning, i) => <Notice key={`${warning}-${i}`}>{warning}</Notice>)}
-        {tab === 'today' && <Today data={current} actions={actions} openSchedule={() => { setTab('schedule'); scroll.current?.scrollTo({ y: 0, animated: false }); }} />}
+        {tab === 'today' && <Today data={current} actions={actions} sample={sample} openSchedule={() => { setTab('schedule'); scroll.current?.scrollTo({ y: 0, animated: false }); }} />}
         {tab === 'schedule' && <Schedule data={current} />}
         {tab === 'commitments' && <Commitments data={current} actions={actions} />}
         {tab === 'decisions' && <Commitments data={current} actions={actions} decisions />}
@@ -85,19 +87,26 @@ export function CommandCenter({ user, api, logout }: { user: AuthUser; api: Api;
       <SafeAreaView style={styles.safe}><KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
         <View style={{ alignItems: 'center' }}><View style={{ width: 36, height: 5, borderRadius: 5, backgroundColor: colors.line }} /></View>
         <Title>{sheet?.type === 'approval' ? 'Review action' : sheet?.type === 'settings' ? 'Your account' : sheet?.type === 'feedback' ? 'Guide Eli' : 'A request for Eli'}</Title>
-        {(sheet?.type === 'request' || sheet?.type === 'feedback') && <Composer key={`${sheet.type}.${sheet.card?.id || 'general'}`} api={api} owner={user.email} card={sheet.card} mode={sheet.type} online={state.online} onSent={state.afterMutation} close={close} />}
-        {sheet?.type === 'approval' && <ApprovalSheet card={sheet.card} data={current} api={api} online={state.online} onSent={state.afterMutation} close={close} />}
-        {sheet?.type === 'settings' && <Settings user={user} logout={logout} close={close} />}
+        {sample && <Notice>{sampleNotice}</Notice>}
+        {(sheet?.type === 'request' || sheet?.type === 'feedback') && <Composer key={`${sheet.type}.${sheet.card?.id || 'general'}`} api={api} owner={user.email} card={sheet.card} mode={sheet.type} online={state.online} onSent={state.afterMutation} close={close} sample={sample} />}
+        {sheet?.type === 'approval' && <ApprovalSheet card={sheet.card} data={current} api={api} online={state.online} onSent={state.afterMutation} close={close} sample={sample} />}
+        {sheet?.type === 'settings' && <Settings user={user} logout={logout} close={close} sample={sample} />}
       </ScrollView></KeyboardAvoidingView>{!state.active && <View style={styles.cover}><Icon name="leaf-outline" size={44} /><Heading>Eli Command Center</Heading></View>}</SafeAreaView>
     </Modal>
     {!state.active && <View style={styles.cover}><Icon name="leaf-outline" size={44} /><Heading>Eli Command Center</Heading></View>}
   </SafeAreaView>;
 }
 
+function SampleCommandCenter({ exit }: { exit: () => void }) {
+  const [api] = useState(createSampleApi);
+  return <CommandCenter user={sampleUser} api={api} logout={exit} sample />;
+}
+
 function Session() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
+  const [sample, setSample] = useState(false);
   const epoch = useRef(0);
   const logout = useCallback(() => {
     epoch.current++; setUser(null); setBusy(false);
@@ -124,11 +133,13 @@ function Session() {
     catch (problem) { setError(problem instanceof ApiError ? problem.message : problem instanceof Error ? problem.message : 'Sign-in could not complete.'); }
     finally { setBusy(false); }
   }
+  if (sample) return <SampleCommandCenter exit={() => setSample(false)} />;
   if (user) return <CommandCenter key={user.email} user={user} api={api} logout={logout} />;
   return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.login}>
     <View style={[styles.mark, { width: 70, height: 70, borderRadius: 23 }]}><Icon name="leaf-outline" size={38} color={colors.white} /></View>
     <Kicker>Eli Command Center</Kicker><Text style={styles.loginTitle}>A clear view.{ '\n' }A considered next step.</Text><Body style={{ color: colors.muted, fontSize: 17, lineHeight: 26 }}>Your priorities, commitments, and Eli’s current state. Together in one private place.</Body>
     <Panel><Heading>Welcome back</Heading><Body>Sign in with your approved Google Workspace account.</Body>{!!error && <Notice danger>{error}</Notice>}{busy ? <ActivityIndicator color={colors.green} accessibilityLabel="Checking sign-in" /> : <GoogleButton onPress={() => { void login(); }} disabled={!loginConfigured || Platform.OS === 'web'} />}{!loginConfigured && <Small>Google login is awaiting release configuration.</Small>}{Platform.OS === 'web' && <Small>Install the signed iPhone app to sign in. This browser view is for layout review.</Small>}</Panel>
+    <Button secondary label="Preview with sample data" disabled={busy} onPress={() => setSample(true)} />
     <LegalLinks /><Small>Private access for Dr. Shaye and his chief of staff.</Small>
   </ScrollView></SafeAreaView>;
 }

@@ -5,8 +5,8 @@ import type { Approval, Card, Dashboard } from './types';
 import { canApprove } from './freshness';
 import { Body, Button, Heading, Kicker, Notice, Panel, s, Small } from './ui';
 
-export function ApprovalSheet({ card, data, api, online, onSent, close }: {
-  card: Card; data: Dashboard | null; api: Api; online: boolean; onSent: () => Promise<void>; close: () => void;
+export function ApprovalSheet({ card, data, api, online, onSent, close, sample = false }: {
+  card: Card; data: Dashboard | null; api: Api; online: boolean; onSent: () => Promise<void>; close: () => void; sample?: boolean;
 }) {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [deadline, setDeadline] = useState(0);
@@ -33,7 +33,7 @@ export function ApprovalSheet({ card, data, api, online, onSent, close }: {
     guard.current = true; setBusy(true); setAttempted(true); setError('');
     try {
       const outcome = await api.execute(approval);
-      setResult(outcome.status === 'queued_for_eli_agent'
+      setResult(sample ? 'Sample approval completed in this preview. No external action was performed.' : outcome.status === 'queued_for_eli_agent'
         ? 'Your approval was queued for Eli. The external action has not been confirmed as completed.'
         : `Action completed.${outcome.eli_agent_writeback === false ? ' Eli’s activity record still needs to be updated.' : ''}`);
       void onSent();

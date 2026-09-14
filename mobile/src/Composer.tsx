@@ -7,8 +7,8 @@ import type { Card, FeedbackCategory, FeedbackRequest } from './types';
 import { drafts } from './drafts';
 import { Body, Button, Heading, Notice, Panel, s, Small } from './ui';
 
-export function Composer({ api, owner, card, mode, online, onSent, close }: {
-  api: Api; owner: string; card?: Card; mode: 'request' | 'feedback'; online: boolean; onSent: () => Promise<void>; close: () => void;
+export function Composer({ api, owner, card, mode, online, onSent, close, sample = false }: {
+  api: Api; owner: string; card?: Card; mode: 'request' | 'feedback'; online: boolean; onSent: () => Promise<void>; close: () => void; sample?: boolean;
 }) {
   const [text, setText] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -87,7 +87,7 @@ export function Composer({ api, owner, card, mode, online, onSent, close }: {
         ? await api.voice(text.trim())
         : await api.feedback({ category, feedback: text.trim(), ...(card ? { item_id: card.id, disposition } : {}) });
       if (!mounted.current) return;
-      setReceipt(`${result.status === 'queued' ? 'Safely queued' : 'Recorded with Eli'}. ${'message' in result ? result.message : result.detail}`);
+      setReceipt(`${sample ? 'Preview only' : result.status === 'queued' ? 'Safely queued' : 'Recorded with Eli'}. ${'message' in result ? result.message : result.detail}`);
       currentText.current = ''; setText('');
       await save('');
       void onSent();

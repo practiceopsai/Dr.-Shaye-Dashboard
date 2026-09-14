@@ -26,4 +26,6 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           test -n "$EXPO_TOKEN" || { echo "Configure the EXPO_TOKEN repository secret first."; exit 1; }
-          npx --yes eas-cli@latest build --platform ios --profile production --auto-submit --non-interactive
+          npx --yes eas-cli@latest build --platform ios --profile production --non-interactive --wait --json > "$RUNNER_TEMP/eli-ios-build.json"
+          BUILD_ID=$(node -e 'const builds = require(process.argv[1]); if (builds.length !== 1 || builds[0].status !== "FINISHED") process.exit(1); process.stdout.write(builds[0].id);' "$RUNNER_TEMP/eli-ios-build.json")
+          npx --yes eas-cli@latest submit --platform ios --profile production --id "$BUILD_ID" --non-interactive --no-auto-testflight-setup

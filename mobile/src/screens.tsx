@@ -20,7 +20,7 @@ export function Priority({ card, data, actions }: { card: Card; data: Dashboard;
   </Panel>;
 }
 
-export function Today({ data, actions, openSchedule }: { data: Dashboard; actions: CardActions; openSchedule: () => void }) {
+export function Today({ data, actions, openSchedule, sample = false }: { data: Dashboard; actions: CardActions; openSchedule: () => void; sample?: boolean }) {
   const cards = data.cards.filter(card => card.priority !== 'P5' && card.priority !== 'P4');
   const upcoming = data.calendar_items?.filter(event => event.all_day || Date.parse(event.end || event.start) >= Date.now()).slice(0, 2) || [];
   return <View style={s.gap}>
@@ -30,7 +30,7 @@ export function Today({ data, actions, openSchedule }: { data: Dashboard; action
       <View style={{ height: 1, backgroundColor: '#ffffff30', marginVertical: 3 }} />
       <Small style={{ color: '#d5e2d6' }}>{cards.length} priorities · {data.admin_count} administrative items</Small>
     </Panel>
-    <View style={s.between}><Heading>What needs you</Heading><Small>{data.live ? 'Verified brief' : 'Partial brief'}</Small></View>
+    <View style={s.between}><Heading>What needs you</Heading><Small>{sample ? 'Sample brief' : data.live ? 'Verified brief' : 'Partial brief'}</Small></View>
     {cards.length ? cards.map(card => <Priority key={card.id} card={card} data={data} actions={actions} />) : <Empty title="Room to focus" message="There are no high-priority items in this brief." />}
     {!!upcoming.length && <Panel><View style={s.between}><Heading>On your schedule</Heading><Icon name="calendar-outline" /></View>{upcoming.map(item => <View key={item.id} style={s.gap}><Small>{item.all_day ? 'All day' : displayTime(item.start, data.timezone, true)}</Small><Body>{item.title}</Body></View>)}<Button secondary label="See schedule" onPress={openSchedule} /></Panel>}
     <Small>Priority order follows Eli’s current ranking. Routine work is available under Commitments.</Small>

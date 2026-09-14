@@ -2,7 +2,7 @@
 
 Decision recorded September 14, 2026: distribute through TestFlight or the App Store. A Safari Home Screen installation is not the chosen release route.
 
-Implementation update, September 14, 2026: the native application now exists in `mobile/`, with targeted tests, a successful iOS JavaScript export, and GitHub verification. The native iOS simulator build also compiled successfully on EAS (build `2a8edc99-cc55-4dae-93fe-ec9dabceba11`, source `c2d145a`). Production EAS updates are connected to successful checks on main and have published successfully. Privacy and support pages are deployed. Apple signing and App Store Connect submission remain outstanding; no installable TestFlight release has been published yet. See `mobile/README.md` for the implemented app and release commands.
+Implementation update, September 14, 2026: the native application exists in `mobile/`, with targeted tests, a successful iOS JavaScript export, and GitHub verification. Both the native iOS simulator build and the first signed production build compiled successfully on EAS. Production build 1.0.0 (2) is `8909fcf8-d96b-446a-bb0c-fea47d94fce3`; its TestFlight upload has been scheduled. Apple signing and App Store Connect submission credentials are configured. Production EAS updates are connected to successful checks on main and have published successfully. Privacy and support pages are deployed. A subsequent binary will include the visible sample mode for review. Actual-device acceptance and Apple's external beta review remain pending. See `mobile/README.md` for release commands.
 
 ## Architecture
 
@@ -29,17 +29,17 @@ Do not promise that every native feature can be silently replaced. Runtime compa
 2. Create the native app with the screens above, native Google sign-in, pull-to-refresh, accessibility, safe-area layouts, and foreground refresh. The initial request screen captures requests; it must not imply a conversational reply from Eli where the API only confirms recording.
 3. Configure the Apple Developer team, bundle identifier, App Store Connect record, iOS Google OAuth client, and Expo/EAS project. Keep signing credentials and API keys in managed secret storage. Use development, preview, and production build profiles with separate update channels.
 4. Test on two actual iPhones: both allowed logins, rejected third account, token expiry, foreground after midnight, network loss, API failure, pagination, voice permission denied, feedback while Eli is unavailable, restart recovery, draft preservation, and exact-action approvals.
-5. Upload the first signed build to TestFlight. Invite the two intended testers explicitly after confirming their Apple account emails. External testing requires Apple's beta review; do not enroll a tester as a developer just to avoid review.
+5. Upload the signed build to TestFlight. Invite the account holder at the explicitly confirmed email. Prepare a limited external beta link for sharing with Dr. Shaye after Apple's beta review; do not enroll an external tester as a developer just to avoid review.
 6. Gather acceptance feedback, then choose App Store distribution appropriate to the intended audience. Maintain the allowlist even if the app listing becomes public. Prepare privacy disclosures, review instructions, support information, and account/access management.
 
 ## Signing and distribution status
 
-- Apple Developer membership and team have been provided. App Store Connect signing access is being configured. EAS CLI's removed Apple service-key endpoint currently prevents its password-based setup; the supported API-key route is the planned alternative.
+- Apple Developer membership, agreements, app record, managed signing credentials, and submission API key are configured. The supported API-key route resolved the earlier password-based signing failure.
 - Bundle identifier `ai.practiceops.eli` and the dedicated iOS OAuth client have been configured in the existing Google project.
 - Expo ownership is `fvarenss-team`, project `fabio`. The account, public app identifiers, update channels, and GitHub automation secret are configured.
-- Tester Apple account emails and invitation authorization are still needed if distribution uses individual invitations rather than a shareable beta link.
+- The account holder confirmed the destination and authorized their own TestFlight invitation. Dr. Shaye's access is planned through a limited shareable external beta link after review.
 
-No Apple membership purchase, app submission, or tester invitation has been made. TestFlight builds expire after 90 days, so release maintenance is required even during a private beta. Actual-device acceptance and Apple's beta review remain separate from JavaScript export and unit/component tests.
+The first TestFlight upload is scheduled. TestFlight builds expire after 90 days, so release maintenance is required even during a private beta. Actual-device acceptance and Apple's beta review remain separate from JavaScript export and unit/component tests. The sample preview is visible to everyone and uses fictional data without granting access to production services.
 
 ## Primary references
 

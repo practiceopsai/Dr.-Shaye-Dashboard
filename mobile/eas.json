@@ -6,5 +6,5 @@
     "preview": { "distribution": "internal", "channel": "preview", "environment": "preview", "node": "24.21.0" },
     "production": { "distribution": "store", "autoIncrement": true, "channel": "production", "environment": "production", "node": "24.21.0" }
   },
-  "submit": { "production": { "ios": {} } }
+  "submit": { "production": { "ios": { "ascAppId": "6811994794", "appleTeamId": "2VY2A3RWFV" } } }
 }
