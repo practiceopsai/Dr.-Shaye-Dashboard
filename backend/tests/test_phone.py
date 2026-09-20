@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import phone
+from app import phone_trial
 from app.security import AuthUser, require_auth
 
 
@@ -210,3 +211,138 @@ def test_trial_reply_can_continue_with_new_request_without_replaying_result(setu
     assert signed(client,cfg,path).content==first.content
     assert signed(client,cfg,next_turn,SpeechResult='Make the checklist shorter.').status_code==200
     assert len(phone.store().jobs('owner@example.com'))==2
+
+
+@pytest.fixture
+def trial(setup, monkeypatch):
+    from email.utils import formatdate
+    cfg,_,client,_=setup
+    cfg.phone_trial_proxy_enabled=True
+    record={'sid':'CA'+'2'*32,'account_sid':cfg.twilio_account_sid,'from':'+12025550101',
+            'to':cfg.twilio_phone_number,'status':'in-progress','direction':'inbound',
+            'date_created':formatdate(time.time(),usegmt=True),'end_time':None}
+    requests=[]
+    original=httpx.AsyncClient
+    def respond(req):
+        requests.append(req)
+        assert req.method=='GET' and str(req.url).endswith('/'+record['sid']+'.json')
+        return httpx.Response(200,json=record)
+    monkeypatch.setattr(phone_trial.httpx,'AsyncClient',lambda **kw:original(transport=httpx.MockTransport(respond),**kw))
+    return cfg,client,record,requests
+
+
+def trial_post(client, url, cfg, **fields):
+    data={'AccountSid':cfg.twilio_account_sid,'CallSid':'CA'+'2'*32,'From':'+12025550101',
+          'To':cfg.twilio_phone_number,**fields}
+    return client.post(url.removeprefix(cfg.phone_public_url),data=data)
+
+
+def trial_action(reply):
+    assert reply.status_code==200,reply.text
+    return ElementTree.fromstring(reply.content).find('Gather').attrib['action']
+
+
+def test_unsigned_trial_full_pin_speech_and_result_flow(trial):
+    cfg,client,record,requests=trial
+    pin=client.post('/api/phone/access/pin').json()['pin']
+    access=client.get('/api/phone/access')
+    assert 'no-store' in access.headers['cache-control']
+    incoming=access.json()['webhook_url']
+    assert 'token=' in incoming
+    auth=trial_action(trial_post(client,incoming,cfg))
+    assert 'token=' in auth and 'scope=call%3A' in auth
+    turn=trial_action(trial_post(client,auth,cfg,Digits=pin))
+    reply=trial_post(client,turn,cfg,SpeechResult='Draft a packing checklist. Do not contact anyone.')
+    assert reply.status_code==200
+    assert trial_post(client,turn,cfg,SpeechResult='Retried request').content==reply.content
+    jobs=phone.store().jobs('owner@example.com')
+    assert len(jobs)==1
+    with phone.store().db() as db:
+        db.execute("UPDATE phone_jobs SET state='completed',audio=? WHERE id=?",(b'audio',jobs[0]['id']))
+    wait=ElementTree.fromstring(reply.content).find('Redirect').text
+    delivered=trial_post(client,wait,cfg)
+    assert delivered.status_code==200 and '/audio/job/' in delivered.text
+    assert 'token=' in trial_action(delivered)
+    assert len(requests)==5
+
+
+def test_trial_capabilities_are_scoped_and_do_not_replace_bad_signatures(trial):
+    cfg,client,record,requests=trial
+    url=client.get('/api/phone/access').json()['webhook_url']
+    assert trial_post(client,'/api/phone/incoming',cfg).status_code==403
+    assert trial_post(client,url.replace('token=','token=x'),cfg).status_code==403
+    assert trial_post(client,url.replace('/incoming','/auth/forged'),cfg).status_code==403
+    assert trial_post(client,url,cfg,From='+12025550102').status_code==403
+    assert trial_post(client,url,cfg,AccountSid='AC'+'9'*32).status_code==403
+    bad=client.post(url.removeprefix(cfg.phone_public_url),data={'AccountSid':cfg.twilio_account_sid,'CallSid':record['sid'],
+        'From':record['from'],'To':record['to']},headers={'X-Twilio-Signature':'wrong'})
+    assert bad.status_code==403
+    cfg.phone_trial_proxy_enabled=False
+    assert trial_post(client,url,cfg).status_code==403
+    assert requests==[]
+
+
+@pytest.mark.parametrize('field,value',[
+    ('from','+12025550999'),('to','+12025550999'),('account_sid','AC'+'9'*32),
+    ('status','completed'),('direction','outbound-api'),('end_time','Sun, 20 Sep 2026 20:00:00 GMT'),
+    ('date_created','Sat, 01 Jan 2000 00:00:00 GMT')])
+def test_trial_requires_matching_live_provider_call(trial,field,value):
+    cfg,client,record,requests=trial
+    url=client.get('/api/phone/access').json()['webhook_url']
+    record[field]=value
+    assert trial_post(client,url,cfg).status_code==403
+    assert len(requests)==1
+    with phone.store().db() as db:
+        assert db.execute('SELECT count(*) FROM phone_calls').fetchone()[0]==0
+
+
+def test_trial_provider_unavailable_fails_closed(trial,monkeypatch):
+    cfg,client,record,_=trial
+    url=client.get('/api/phone/access').json()['webhook_url']
+    class Unavailable:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def get(self,*args,**kwargs):raise httpx.ReadTimeout('Provider not available')
+    monkeypatch.setattr(phone_trial.httpx,'AsyncClient',lambda **kw:Unavailable())
+    assert trial_post(client,url,cfg).status_code==503
+    assert phone.store().jobs('owner@example.com')==[]
+
+
+def test_trial_followup_token_expires_and_cannot_change_call(trial):
+    cfg,client,record,requests=trial
+    client.post('/api/phone/access/pin')
+    auth=trial_action(trial_post(client,client.get('/api/phone/access').json()['webhook_url'],cfg))
+    assert trial_post(client,auth,cfg,CallSid='CA'+'3'*32).status_code==403
+    from urllib.parse import urlencode
+    path=urlsplit(auth).path
+    scope='call:'+record['sid']
+    expires=int(time.time())-1
+    old=path+'?'+urlencode({'scope':scope,'expires':expires,'token':phone_trial.token(cfg,path,scope,expires)})
+    assert trial_post(client,old,cfg).status_code==403
+    assert len(requests)==1
+
+
+def test_unsigned_trial_callback_keeps_pin_gate(trial):
+    cfg,client,record,requests=trial
+    pin=client.post('/api/phone/access/pin').json()['pin']
+    draft=phone.propose_call('owner@example.com',phone.OutboundProposal(recipient=record['from'],message='Update ready',purpose='Requested callback'),callback_job='test-job',approved=True)
+    with phone.store().db() as db:db.execute("UPDATE phone_outbound SET state='calling' WHERE id=?",(draft['id'],))
+    record.update({'from':cfg.twilio_phone_number,'to':'+12025550101','direction':'outbound-api'})
+    url=phone.voice_url('/api/phone/outbound/'+draft['id']+'/answer',outbound_id=draft['id'])
+    fields={'From':record['from'],'To':record['to']}
+    auth=trial_action(trial_post(client,url,cfg,**fields))
+    assert '/auth/' in auth
+    with phone.store().db() as db:
+        assert db.execute('SELECT authenticated FROM phone_calls').fetchone()[0]==0
+    turn=trial_action(trial_post(client,auth,cfg,Digits=pin,**fields))
+    assert '/turn/' in turn and 'token=' in turn
+    assert len(requests)==2
+
+
+def test_private_webhook_query_is_redacted_from_access_log():
+    import logging
+    record=logging.LogRecord('uvicorn.access',logging.INFO,'',0,'%s - "%s %s HTTP/%s" %d',
+        ('client','POST','/api/phone/incoming?token=private-capability','1.1',403),None)
+    assert phone.PrivateAudioLogFilter().filter(record)
+    assert 'private-capability' not in record.getMessage()
+    assert '?[redacted]' in record.getMessage()

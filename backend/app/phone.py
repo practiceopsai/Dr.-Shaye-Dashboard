@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .phone_store import PhoneStore
+from .phone_trial import webhook_url, validate_request as validate_trial_request
 from .security import AuthUser, contains_phi, payload_hash, require_auth
 
 router = APIRouter(tags=["Phone"])
@@ -34,7 +35,7 @@ log = logging.getLogger('uvicorn.error')
 
 class PrivateAudioLogFilter(logging.Filter):
     def filter(self, record):
-        if isinstance(record.args, tuple) and len(record.args) == 5 and isinstance(record.args[2],str) and '/api/phone/audio/' in record.args[2]:
+        if isinstance(record.args, tuple) and len(record.args) == 5 and isinstance(record.args[2],str) and '/api/phone/' in record.args[2] and '?' in record.args[2]:
             args=list(record.args)
             args[2]=args[2].split('?',1)[0]+'?[redacted]'
             record.args=tuple(args)
@@ -66,6 +67,11 @@ def public_url():
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.path or parsed.query or parsed.fragment:
         raise HTTPException(503, "Phone URL is not configured")
     return value
+
+
+def voice_url(path, *, call_id=None, outbound_id=None, actor=None):
+    scope = 'entry:' + actor if actor else 'outbound:' + outbound_id if outbound_id else 'call:' + str(call_id)
+    return webhook_url(public_url(), path, settings(), scope)
 
 
 def callers():
@@ -148,7 +154,12 @@ async def twilio_form(request: Request):
         url += "?" + request.url.query
     signed = url + "".join(key + values[key] for key in sorted(values))
     expected = base64.b64encode(hmac.new(cfg.twilio_auth_token.encode(), signed.encode(), hashlib.sha1).digest()).decode()
-    if not hmac.compare_digest(expected, request.headers.get("x-twilio-signature", "")):
+    supplied_signature = request.headers.get('x-twilio-signature', '')
+    valid_identity = values.get('AccountSid') == cfg.twilio_account_sid and bool(re.fullmatch(r'CA[a-fA-F0-9]{32}', values.get('CallSid', '')))
+    valid_signature = hmac.compare_digest(expected.encode(), supplied_signature.encode())
+    if not valid_signature and not supplied_signature and valid_identity:
+        valid_signature = await validate_trial_request(request, values, cfg, callers())
+    if not valid_signature:
         # Trial forwarding may differ from direct Voice webhooks. Record only
         # verification facts, never the signature, PIN, transcript, or numbers.
         log.warning('Phone webhook rejected: signature; signature_present=%s account_matches=%s call_id_valid=%s',
@@ -188,16 +199,16 @@ def save_event(db, call, nonce, next_nonce, root):
     return response(root)
 
 
-def gather_request(root, nonce):
-    gather = SubElement(root, "Gather", input="speech", action=public_url()+f"/api/phone/turn/{nonce}",
+def gather_request(root, nonce, call_id):
+    gather = SubElement(root, "Gather", input="speech", action=voice_url(f"/api/phone/turn/{nonce}", call_id=call_id),
                         method="POST", timeout="7", speechTimeout="auto", language="en-US")
     prompt(gather, "listen", "I'm listening. What would you like me to do? Please leave out patient information.")
     SubElement(root, "Hangup")
 
 
-def wait_response(root, job_id, hop=0):
+def wait_response(root, job_id, call_id, hop=0):
     SubElement(root, "Pause", length="5")
-    SubElement(root, "Redirect", method="POST").text = public_url()+f"/api/phone/wait/{job_id}/{hop}"
+    SubElement(root, "Redirect", method="POST").text = voice_url(f"/api/phone/wait/{job_id}/{hop}", call_id=call_id)
 
 
 @router.post("/api/phone/incoming")
@@ -224,7 +235,7 @@ async def incoming(request: Request):
                    (form['CallSid'], actor, form['From'], nonce, time.time()))
         root = Element("Response")
         gather = SubElement(root, "Gather", input="dtmf", numDigits="8", timeout="10", method="POST",
-                            action=public_url()+f"/api/phone/auth/{nonce}")
+                            action=voice_url(f"/api/phone/auth/{nonce}", call_id=form['CallSid']))
         prompt(gather, "welcome", "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
         SubElement(root, "Hangup")
         db.execute("INSERT INTO phone_events VALUES (?,?,?)", (form['CallSid'], 'entry', tostring(root, encoding='unicode')))
@@ -265,7 +276,7 @@ async def authenticate_call(nonce: str, request: Request):
                     SubElement(root, "Play").text = audio_url('job', job['id'])
                 elif job:
                     say(root, job['result'][:2000] or "Your request needs attention in the command center.")
-        gather_request(root, next_nonce)
+        gather_request(root, next_nonce, call['id'])
         return save_event(db, call, nonce, next_nonce, root)
 
 
@@ -298,11 +309,11 @@ async def accept_turn(nonce: str, request: Request):
                    (job_id, call['actor'], call['id'], text, now, now))
         if settings().phone_outbound_enabled:
             gather = SubElement(root, 'Gather', input='dtmf', numDigits='1', timeout='4', method='POST',
-                                action=public_url()+f'/api/phone/callback/{job_id}/{next_nonce}')
+                                action=voice_url(f'/api/phone/callback/{job_id}/{next_nonce}', call_id=call['id']))
             prompt(gather, 'callback', "I've saved your request. To hang up and request one callback with the result, press one. Otherwise, stay on the line.")
         else:
             prompt(root, 'working', "I've saved your request. I'm working on it. You may hang up; the result will appear in the command center.")
-        wait_response(root, job_id)
+        wait_response(root, job_id, call['id'])
         return save_event(db, call, nonce, next_nonce, root)
 
 
@@ -324,7 +335,7 @@ async def request_callback(job_id: str, nonce: str, request: Request):
             prompt(root, 'saved', "I'll continue working after this call and attempt one callback when the result is ready. You can also check the command center. Goodbye.")
             SubElement(root, 'Hangup')
         else:
-            wait_response(root, job_id)
+            wait_response(root, job_id, call['id'])
         return save_event(db, call, nonce, secrets.token_urlsafe(18), root)
 
 
@@ -347,7 +358,7 @@ async def wait_for_turn(job_id: str, hop: int, request: Request):
             SubElement(root, 'Play').text = audio_url('job', job_id)
             if call['hops'] < 5:
                 next_nonce = secrets.token_urlsafe(18)
-                gather_request(root, next_nonce)
+                gather_request(root, next_nonce, call['id'])
             else:
                 prompt(root, 'bye', 'You can find this result in the command center, or call me again with another request. Goodbye.')
                 SubElement(root, 'Hangup')
@@ -358,7 +369,7 @@ async def wait_for_turn(job_id: str, hop: int, request: Request):
             say(root, "Your request is saved and will continue after this call. Check the command center for the result. Goodbye.")
             SubElement(root, 'Hangup')
         else:
-            wait_response(root, job_id, hop+1)
+            wait_response(root, job_id, call['id'], hop+1)
         return save_event(db, call, event_key, next_nonce, root)
 
 
@@ -385,12 +396,14 @@ def private_audio(kind: str, identifier: str, expires: int, token: str):
 
 
 @router.get('/api/phone/access')
-def phone_access(user: AuthUser = Depends(require_auth)):
+def phone_access(response: Response, user: AuthUser = Depends(require_auth)):
     entry = owner_entry(user)
     with store().db() as db:
         access = db.execute('SELECT pin_hash FROM phone_access WHERE actor=?', (user.email,)).fetchone()
         bridge = db.execute('SELECT seen FROM phone_bridge_health WHERE id=1').fetchone()
+    response.headers['Cache-Control'] = 'no-store, private'
     return {'phone': entry['phone'], 'eli_number': settings().twilio_phone_number,
+            'webhook_url': voice_url('/api/phone/incoming', actor=user.email),
             'pin_configured': bool(access and access['pin_hash']),
             'bridge_online': bool(bridge and time.time()-bridge['seen'] < 30),
             'outbound_enabled': settings().phone_outbound_enabled,
@@ -551,7 +564,7 @@ async def answer_outbound(identifier: str, request: Request):
             nonce = secrets.token_urlsafe(18)
             db.execute('INSERT INTO phone_calls(id,actor,phone,nonce,created,outbound_id) VALUES (?,?,?,?,?,?)',
                        (form['CallSid'], outgoing['actor'], outgoing['recipient'], nonce, time.time(), identifier))
-            gather = SubElement(root, 'Gather', input='dtmf', numDigits='8', timeout='10', method='POST', action=public_url()+f'/api/phone/auth/{nonce}')
+            gather = SubElement(root, 'Gather', input='dtmf', numDigits='8', timeout='10', method='POST', action=voice_url(f'/api/phone/auth/{nonce}', call_id=form['CallSid']))
             prompt(gather, 'welcome', "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
             SubElement(root, 'Hangup')
             db.execute('INSERT INTO phone_events VALUES (?,?,?)', (form['CallSid'], 'entry', tostring(root,encoding='unicode')))
@@ -560,7 +573,7 @@ async def answer_outbound(identifier: str, request: Request):
             # principal identity, memory access, or permission to issue instructions.
             SubElement(root, 'Play').text = audio_url('outbound', identifier)
             gather = SubElement(root, 'Gather', input='speech', timeout='6', speechTimeout='auto', method='POST',
-                                action=public_url()+f'/api/phone/outbound/{identifier}/reply')
+                                action=voice_url(f'/api/phone/outbound/{identifier}/reply', call_id=form['CallSid']))
             say(gather, 'You may leave a brief response now.')
             SubElement(root, 'Hangup')
         return response(root)
@@ -664,8 +677,8 @@ async def phone_work_once():
             result = await client.post(f'https://api.twilio.com/2010-04-01/Accounts/{cfg.twilio_account_sid}/Calls.json',
                 auth=(cfg.twilio_account_sid,cfg.twilio_auth_token), data={
                     'To':outgoing['recipient'],'From':cfg.twilio_phone_number,
-                    'Url':public_url()+f"/api/phone/outbound/{outgoing['id']}/answer",
-                    'StatusCallback':public_url()+f"/api/phone/outbound/{outgoing['id']}/status"})
+                    'Url':voice_url(f"/api/phone/outbound/{outgoing['id']}/answer", outbound_id=outgoing['id']),
+                    'StatusCallback':voice_url(f"/api/phone/outbound/{outgoing['id']}/status", outbound_id=outgoing['id'])})
         data = result.json()
         if result.status_code == 201 and re.fullmatch(r'CA[a-fA-F0-9]{32}', str(data.get('sid',''))):
             with store().db() as db:

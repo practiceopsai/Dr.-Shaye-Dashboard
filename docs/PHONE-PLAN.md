@@ -10,7 +10,9 @@ rules with a separate voice chatbot.
 1. Sign in at `/phone` with the approved Google account and create a private
    eight digit phone code. Only its salted hash is stored. Resetting it invalidates
    authenticated calls. The registered phone number is configured by the operator.
-2. Configure Twilio's incoming webhook as `POST https://<backend>/api/phone/incoming`.
+2. Copy the **private Twilio webhook** from your signed-in Phone page into
+   Twilio > Inbound > Custom, select POST and save. Copy the entire URL, including
+   its query parameters. Keep it private and use the URL for the selected caller.
    The original `/api/phone/preview` remains a harmless standalone voice sample.
 3. On the trial, verify each caller and recipient in Twilio. Use the trial number
    assigned by Twilio for that recipient; it may differ between recipients.
@@ -67,6 +69,22 @@ Backend secrets: `TWILIO_AUTH_TOKEN`, `OPENAI_API_KEY`, `PHONE_BRIDGE_TOKEN`.
 Other settings: `PHONE_ENABLED`, `PHONE_OUTBOUND_ENABLED`, `PHONE_PUBLIC_URL`,
 `TWILIO_ACCOUNT_SID`, `TWILIO_PHONE_NUMBER`, `PHONE_CALLERS_JSON`, `PHONE_VOICE`.
 The backend requires its persistent `DASHBOARD_STATE_PATH`.
+
+`PHONE_TRIAL_PROXY_ENABLED` defaults to false. On this trial, an actual inbound
+call on September 20, 2026 reached the backend without `X-Twilio-Signature`, while
+the account and call IDs were present. With the trial option enabled, unsigned
+requests require a private HMAC capability tied to the exact route and caller
+(entry) or call ID (continuation). Continuations expire after 20 minutes. Outbound
+answer/status URLs are bound to their approved call ID. A direct REST lookup,
+bounded to 2.5 seconds, independently confirms the exact account, call SID,
+From/To endpoints, recent creation and active call status. Provider failures deny
+access. Caller allowlisting, PINs, call-step nonces and exact approvals still apply.
+Normal signed webhooks retain signature verification; a supplied invalid signature
+does not fall back to trial authentication. No public endpoint issues capabilities.
+Private URLs are returned only to their signed-in owner with no-store headers,
+and query strings are redacted from application access logs. Rotating the bridge
+token invalidates the capabilities; disable trial mode after migration to direct
+signed Voice webhooks. Trial callbacks still need a real acceptance test.
 
 The native plugin uses the same bridge token in its protected environment and
 `plugins.entries.eli_phone.settings` for the URL and pinned identities. Enable

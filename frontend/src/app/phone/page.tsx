@@ -9,13 +9,14 @@ export default function PhonePage() {
   const [user,setUser]=useState<AuthUser|null>(null);
   const [data,setData]=useState<PhoneAccess|null>(null);
   const [pin,setPin]=useState("");
+  const [webhookCopied,setWebhookCopied]=useState(false);
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
   const [recipient,setRecipient]=useState("");
   const [message,setMessage]=useState("");
   const [purpose,setPurpose]=useState("");
   const signOut=useCallback(()=>{
-    sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);setUser(null);setData(null);setPin("");
+    sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);setUser(null);setData(null);setPin("");setWebhookCopied(false);
   },[]);
   const refresh=useCallback(async()=>{
     const credential=sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);
@@ -45,6 +46,16 @@ export default function PhonePage() {
     try{await action();await refresh();}catch(e){setError(e instanceof Error?e.message:"Request failed");}
     finally{setBusy(false);}
   }
+  async function copyWebhook(){
+    if(!data?.webhook_url)return;
+    const credential=sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);
+    try{
+      await navigator.clipboard.writeText(data.webhook_url);
+      if(sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY)===credential)setWebhookCopied(true);
+    }catch{
+      if(sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY)===credential)setError("Select the private URL above and copy it manually.");
+    }
+  }
   return <main className="phone-page">
     <header><Link href="/">← Command Center</Link><h1>Speak with Eli</h1><p>Same Eli. Requests continue after you hang up.</p></header>
     {error&&<p role="alert" className="phone-error">{error}</p>}
@@ -54,6 +65,11 @@ export default function PhonePage() {
         {data?<><p>Call <a href={`tel:${data.eli_number}`}>{data.eli_number}</a> from <strong>{data.phone}</strong>.</p>
           <p>{data.bridge_online?"Eli is connected.":"Eli is reconnecting. Accepted requests stay saved."}</p>
           <p>Enter your eight digit code when Eli answers. On the Twilio trial, your number must also be verified in Twilio.</p>
+          {data.webhook_url&&<div className="phone-webhook"><h3>Twilio connection</h3>
+            <p>Copy this entire private URL into Twilio → Inbound → Custom → Webhook URL. Select POST and save. Keep the link private.</p>
+            <label>Private Twilio webhook<input readOnly value={data.webhook_url} onFocus={event=>event.target.select()}/></label>
+            <button onClick={()=>void copyWebhook()}>{webhookCopied?"Webhook copied":"Copy private Twilio webhook"}</button>
+          </div>}
           <button disabled={busy} onClick={()=>void perform(async()=>{const credential=sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);const result=await api.phonePin();if(sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY)===credential)setPin(result.pin);})}>{data.pin_configured?"Create a replacement access code":"Create my access code"}</button>
           {pin&&<div className="phone-code"><span>Your private access code</span><strong>{pin}</strong><p>Save this code privately. Creating another code replaces it.</p><button onClick={()=>setPin("")}>Hide code</button></div>}
           <p>Long requests can finish after the call. Approval-sensitive work keeps Eli&apos;s existing rules. Leave patient information out of this channel.</p>

@@ -10,6 +10,18 @@ const access={phone:"+12025550101",eli_number:"+12025550100",pin_configured:fals
 beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();sessionStorage.setItem(GOOGLE_CREDENTIAL_KEY,"initial");vi.mocked(api.me).mockResolvedValue(owner);vi.mocked(api.phone).mockResolvedValue(access);});
 
 describe("private phone setup",()=>{
+  it("copies the signed-in user's full private webhook and removes it on sign-out",async()=>{
+    const webhook="https://phone.example/api/phone/incoming?scope=entry&token=private-test-token";
+    const writeText=vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText}});
+    vi.mocked(api.phone).mockResolvedValue({...access,webhook_url:webhook});
+    render(<PhonePage/>);
+    fireEvent.click(await screen.findByText("Copy private Twilio webhook"));
+    await waitFor(()=>expect(writeText).toHaveBeenCalledWith(webhook));
+    expect(await screen.findByText("Webhook copied")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Sign out"));
+    expect(screen.queryByDisplayValue(webhook)).not.toBeInTheDocument();
+  });
   it("shows a newly created code only in the current signed-in session",async()=>{
     vi.mocked(api.phonePin).mockResolvedValue({pin:"12345678",phone:access.phone});
     render(<PhonePage/>);

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     dashboard_state_path: str = ""
     phone_enabled: bool = False
     phone_outbound_enabled: bool = False
+    phone_trial_proxy_enabled: bool = False
     phone_public_url: str = ""
     phone_bridge_token: str = ""
     phone_callers_json: str = "{}"
