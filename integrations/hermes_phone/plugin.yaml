@@ -1,0 +1,9 @@
+name: eli_phone
+version: 1.0.0
+description: Verified phone requests through Eli's existing gateway and memory provider.
+author: PracticeOps
+provides_tools:
+  - eli_phone_propose_call
+  - eli_phone_status
+requires_env:
+  - ELI_PHONE_BRIDGE_TOKEN

@@ -159,6 +159,7 @@ export default function Home() {
     <main className="shell">
       <aside>
         <div className="brand"><span><Command size={20} /></span><div><b>Eli</b><small>Command Center</small></div></div>
+        <a href="/phone" className="phone-link">Phone access and requests</a>
         <ViewNav current={activeView} onChange={setActiveView} className="side-nav" idPrefix="side" />
         <SystemStatus integrations={current ? data?.integrations || {} : {}} />
         <div className="privacy"><LockKeyhole size={15} /><p><b>Private by design</b><span>No patient data. Every external action requires exact approval.</span></p></div>
@@ -175,6 +176,7 @@ export default function Home() {
         </header>
 
         <ViewNav current={activeView} onChange={setActiveView} className="mobile-nav" idPrefix="mobile" />
+        <a href="/phone" className="phone-link">Speak with Eli · Phone access and requests</a>
 
         {error && <div className="banner error-banner"><CircleAlert size={18} /><div><b>Couldn&apos;t load the live brief</b><span>{error}</span></div></div>}
         {data && !current && <div className="banner error-banner" role="status"><CircleAlert size={18} /><div><b>This brief has expired</b><span>Refreshing current information. Previous actions are hidden until verified.</span></div></div>}

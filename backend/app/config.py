@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     background_refresh_enabled: bool = False
     dashboard_refresh_seconds: int = 300
     dashboard_state_path: str = ""
+    phone_enabled: bool = False
+    phone_outbound_enabled: bool = False
+    phone_public_url: str = ""
+    phone_bridge_token: str = ""
+    phone_callers_json: str = "{}"
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+    openai_api_key: str = ""
+    phone_voice: str = "marin"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -14,6 +14,7 @@ from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackR
 from .priorities import build_dashboard
 from .outbox import PendingMap
 from .phone_preview import router as phone_preview_router
+from .phone import router as phone_router, phone_worker
 from .security import AuthUser, contains_phi, payload_hash, require_auth
 
 
@@ -23,16 +24,21 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app):
     task = asyncio.create_task(_refresh_loop()) if settings.background_refresh_enabled else None
+    phone_task = asyncio.create_task(phone_worker()) if settings.phone_enabled else None
     try:
         yield
     finally:
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if phone_task:
+            phone_task.cancel()
+            await asyncio.gather(phone_task, return_exceptions=True)
 
 
 app = FastAPI(title="Eli Command Center API", version="1.1.0", lifespan=lifespan)
 app.include_router(phone_preview_router)
+app.include_router(phone_router)
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 _cache: dict[str, Any] = {}

@@ -1,54 +1,88 @@
-# Eli phone integration
+﻿# Eli phone channel
 
-## Current stage: Marin voice preview
+The phone service uses Twilio for calls and speech recognition, OpenAI Marin for
+spoken responses, and the existing native Hermes gateway for Eli's actual work.
+It does not replace the model, memory provider, persona, earned rank, or approval
+rules with a separate voice chatbot.
 
-The backend serves a short, explicitly labeled synthetic introduction using
-OpenAI's Marin voice, with warm, clear feminine delivery and a conversational
-pace. It identifies Eli as an AI assistant. The public preview
-contains no private information and makes no runtime requests to OpenAI or Eli.
+## Setup
 
-In Twilio's trial console, select **Inbound → Custom**, use **POST**, and set
-the webhook to `https://<backend-domain>/api/phone/preview`. Calling the trial
-number from a verified phone plays the preview and ends the call. It does not
-yet accept requests or hold a conversation.
+1. Sign in at `/phone` with the approved Google account and create a private
+   eight digit phone code. Only its salted hash is stored. Resetting it invalidates
+   authenticated calls. The registered phone number is configured by the operator.
+2. Configure Twilio's incoming webhook as `POST https://<backend>/api/phone/incoming`.
+   The original `/api/phone/preview` remains a harmless standalone voice sample.
+3. On the trial, verify each caller and recipient in Twilio. Use the trial number
+   assigned by Twilio for that recipient; it may differ between recipients.
+4. Call from the registered number and enter the code. Request a task normally.
+   Press one when offered to authorize one callback about that specific request.
 
-`RAILWAY_PUBLIC_DOMAIN` supplies the canonical audio URL. The backend does not
-trust caller-supplied host headers to construct that URL. The bundled MP3 is
-available at `/api/phone/preview.mp3`. The TwiML adds a version query parameter
-to the audio URL when the voice changes, so cached audio does not preserve the
-previous voice. The configured Twilio webhook URL stays the same. Preview
-routes deliberately accept public requests because they serve only this fixed,
-non-sensitive audio.
+## Same Eli and continued work
 
-## Work required for actual conversations
+`integrations/hermes_phone` installs as the external `eli_phone` plugin. It polls
+our private queue and dispatches a verified direct-message event through the
+existing gateway handler, response policy, model routing, memory, persona, and
+tool hooks. Each person has a stable phone session. Long-term context stays in
+Eli's existing vault and memory provider. The principal allowlist is retained;
+operator sessions do not acquire principal memory access.
 
-- Connect a verified caller to the existing Hermes runtime and its current
-  memory, behavior, authority limits, and approval process.
-- Add a second identity check before private context or actions; caller ID
-  alone is not sufficient. Distinguish the operator from the principal.
-- Validate Twilio webhook signatures and bind each conversation to its call.
-- Use durable, deduplicated work for agent turns and action execution. Do not
-  retry ambiguous external writes or announce completion without evidence.
-- Generate Marin audio from Eli's actual reply; authenticate access to private
-  audio and give it a short lifetime.
-- Save requests and verified results in the command center. Requests that need
-  approval remain pending until the exact action has been confirmed.
-- Exercise real inbound calls, failed services, dropped calls, and concurrent
-  requests before treating the phone channel as operational.
+The persona evidence gate needs the configured `principal_platforms` list to
+include `eli_phone`. Its existing user-ID and direct-message checks remain.
 
-The existing dashboard's direct external execution remains disabled. The
-Hermes conversation API was not enabled at the September 20 inspection. A
-voice preview does not change either setting.
+Requests are saved before Twilio receives an acknowledgement. Hanging up does
+not cancel the native agent turn. The native operation journal retains results
+for idempotent delivery. Interrupted work is marked uncertain and never replayed
+automatically. Reconcile an uncertain request before further work for that actor.
+A completed turn means Eli returned a reply; that reply may describe an approval
+requirement or incomplete action.
 
-## Trial constraints
+Marin reads the returned reply. Private audio uses signed URLs lasting ten minutes
+and is cleared after 24 hours. Audio tokens are omitted from access logs. The
+Phone page shows each caller's saved requests, replies and outstanding decisions.
 
-Twilio currently permits `Gather`, `Say`, and `Play` on trials, but blocks
-`Stream` and `ConversationRelay`. Its documented limits include a five-second
-TwiML fetch timeout, ten action/redirect hops, ten minutes per call, and 75
-total voice minutes. The trial implementation needs asynchronous work and a
-bounded polling/turn budget; it cannot assume an unlimited conversation.
-OpenAI speech generation is billed separately from the Twilio trial.
+## Outbound calls
+
+Prepare a call in the Phone page, or ask Eli to use `eli_phone_propose_call`.
+The exact recipient, purpose and spoken message are shown for approval. Approval
+expires after one hour. Only explicit approval or a keypad request for one callback
+can place a call. Uncertain submissions are never automatically redialed. Twilio
+call status is separate from the agent result; completion does not prove listening.
+
+Callbacks require the private code before playing a personal result. Calls to
+other people use an AI introduction and the exact approved message, then collect
+one response. They do not give the recipient private memory access, authority to
+direct Eli, or permission to negotiate commitments. Replies are third-party data,
+available through `eli_phone_status` and the Phone page. Further calls or
+commitments require their own approval.
+
+Trial destinations must be verified in Twilio. Its current API documentation
+also lists only template URLs for trial call creation, despite supporting custom
+TwiML in the trial UI. Custom outbound calling must therefore be verified on the
+actual account before claiming it works. Errors remain visible in the Phone page;
+this integration does not upgrade an account or purchase a number.
+
+## Runtime and verification
+
+Backend secrets: `TWILIO_AUTH_TOKEN`, `OPENAI_API_KEY`, `PHONE_BRIDGE_TOKEN`.
+Other settings: `PHONE_ENABLED`, `PHONE_OUTBOUND_ENABLED`, `PHONE_PUBLIC_URL`,
+`TWILIO_ACCOUNT_SID`, `TWILIO_PHONE_NUMBER`, `PHONE_CALLERS_JSON`, `PHONE_VOICE`.
+The backend requires its persistent `DASHBOARD_STATE_PATH`.
+
+The native plugin uses the same bridge token in its protected environment and
+`plugins.entries.eli_phone.settings` for the URL and pinned identities. Enable
+`platforms.eli_phone` with a direct-message allowlist and the relevant existing
+tools. No native agent HTTP listener is exposed publicly.
+
+Backend tests cover signatures, PIN isolation and lockout, duplicate webhooks,
+continued work, private audio, actor isolation, exact approvals, no repeat dialing
+after ambiguous failures, and conversation continuations. Native tests use the
+installed Hermes imports before activation. Real inbound and outbound calls remain
+separate end-to-end checks with the user.
+
+Trial conversations use Gather, Play, Pause and Redirect. They include pauses
+while Eli works and end before the ten-hop budget. This is not full-duplex audio.
+Twilio currently blocks Stream and ConversationRelay on trials, limits TwiML
+fetches to five seconds, and limits a call to ten minutes.
 
 References: [Twilio trial Voice](https://www.twilio.com/docs/usage/trials/try-out-voice),
-[OpenAI speech](https://developers.openai.com/api/docs/guides/text-to-speech),
-[Hermes API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server).
+[OpenAI speech](https://developers.openai.com/api/docs/guides/text-to-speech).

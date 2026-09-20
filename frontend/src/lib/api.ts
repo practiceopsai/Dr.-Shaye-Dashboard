@@ -14,6 +14,9 @@ export type FeedbackRequest = { category:FeedbackCategory; feedback:string; item
 export type FeedbackResponse = { feedback_id:string; status:"recorded"|"queued"; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean; detail:string };
 export type VoiceResponse = { command_id:string; status:"recorded"|"queued"; intent:"priority_feedback"|"dashboard_change"|"action_request"; message:string; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean };
 export type AuthUser = { email:string; name:string; picture?:string|null; role:"owner"|"chief_of_staff" };
+export type PhoneJob = {id:string;transcript:string;state:string;created:number;result:string;error:string;callback_requested:number};
+export type PhoneCall = {id:string;recipient:string;message:string;purpose:string;payload_hash:string;state:string;expires:number;error:string;reply:string};
+export type PhoneAccess = {phone:string;eli_number:string;pin_configured:boolean;bridge_online:boolean;outbound_enabled:boolean;jobs:PhoneJob[];outbound:PhoneCall[]};
 
 export const GOOGLE_CREDENTIAL_KEY = "eli_google_credential";
 
@@ -40,4 +43,9 @@ export const api={
   approve:(item:Card)=>call<{approval_id:string;payload_hash:string}>("/api/approvals",{method:"POST",body:JSON.stringify({item})}),
   execute:(approval_id:string,payload_hash:string)=>call<{status:string}>("/api/execute",{method:"POST",body:JSON.stringify({approval_id,payload_hash})}),
   voice:(transcript:string)=>call<VoiceResponse>("/api/voice",{method:"POST",body:JSON.stringify({transcript})}),
+  phone:()=>call<PhoneAccess>("/api/phone/access"),
+  phonePin:()=>call<{pin:string;phone:string}>("/api/phone/access/pin",{method:"POST"}),
+  proposeCall:(recipient:string,message:string,purpose:string)=>call<PhoneCall>("/api/phone/outbound",{method:"POST",body:JSON.stringify({recipient,message,purpose})}),
+  approveCall:(id:string,payload_hash:string)=>call<{status:string}>(`/api/phone/outbound/${encodeURIComponent(id)}/approve`,{method:"POST",body:JSON.stringify({payload_hash})}),
+  cancelCall:(id:string)=>call<{status:string}>(`/api/phone/outbound/${encodeURIComponent(id)}/cancel`,{method:"POST"}),
 };
