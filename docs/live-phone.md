@@ -44,6 +44,15 @@ delegated and the voice model must wait for a verified outcome. The three-pendin
 request limit, patient-information boundary and approval requirements remain.
 Memory/rank are accessed through native Eli, not a separate voice memory copy.
 
+The native phone plugin exposes `eli_phone_send_whatsapp` for an explicit caller
+instruction. It uses the already-connected native WhatsApp transport, independently
+of Twilio. The current authenticated caller, active native request, exact message,
+channel and named configured contact or dictated number must match. A durable
+receipt prevents the same request from sending twice; uncertain attempts require
+reconciliation. Only a successful provider message ID confirms a send. An older
+message with the same subject or body does not fulfill a newly requested action.
+Eli's own inbox and the caller's personal inbox must be identified separately.
+
 Sessions are limited to twenty minutes and stored voice recordings are disabled.
 The model handles duplex turn taking; audio chunks are forwarded immediately.
 Questions requiring native work still incur that work's latency. Telephone

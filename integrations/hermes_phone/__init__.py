@@ -18,6 +18,21 @@ from gateway.response_policy import user_turn, validate_text
 log = logging.getLogger('eli.phone')
 _settings = {}
 
+PHONE_TOOL_GUIDANCE = (
+    'For an explicit WhatsApp message use eli_phone_send_whatsapp with recipient (exact E.164 number), '
+    'message (the exact caller-approved text), and approval_quote (the current caller words requesting it). '
+    'The native WhatsApp transport is separate from Twilio. Do not search Composio, the desktop, or files '
+    'for a different sender. If delivery cannot be confirmed, state that promptly and do not retry. '
+    'For Eli\'s own inbox use email_list_threads with a small limit and email_get_thread only when needed. '
+    'Name the inbox you actually checked; Eli\'s inbox is not the caller\'s personal Gmail. '
+    'Use the existing account routing for personal/practice Gmail and ask when caller identity makes my email ambiguous. '
+    'For a new approved email use email_send with to, subject, text, mandate and success_condition. '
+    'An older email with the same recipient or subject does not fulfill a new instruction. '
+    'Only report a send when a receipt belongs to this request and its exact payload, or a source-system '
+    'record proves this same request already sent it. A completed phone turn is not proof an action succeeded. '
+    'Use these known tools directly; avoid repeating skill catalogs and tool discovery already in this session.'
+)
+
 
 def configuration():
     return _settings
@@ -212,7 +227,12 @@ def register(ctx):
     ctx.register_platform(name='eli_phone',label='Eli phone',adapter_factory=PhoneAdapter,check_fn=lambda:True,
         validate_config=lambda cfg:bool(os.environ.get('ELI_PHONE_BRIDGE_TOKEN') and configuration().get('backend_url')),
         allowed_users_env='ELI_PHONE_ALLOWED_USERS',allow_update_command=False,pii_safe=True,
-        platform_hint='This is a private authenticated phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. Private callback updates require the caller phone access code.')
+        platform_hint='This is a private authenticated phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. Private callback updates require the caller phone access code. '+PHONE_TOOL_GUIDANCE)
+    from .messaging import send_whatsapp
+    ctx.register_tool(name='eli_phone_send_whatsapp',toolset='eli_phone',
+        handler=lambda args,**kwargs:json.dumps(send_whatsapp(args,configuration())),
+        schema={'name':'eli_phone_send_whatsapp','description':'Send the exact WhatsApp text explicitly requested by the currently authenticated phone caller. Supply a verbatim quote from the current caller requesting this recipient and message. No patient information or attachments. Returns a durable request-specific receipt; never resend an uncertain attempt.',
+                'parameters':{'type':'object','properties':{'recipient':{'type':'string','description':'Exact E.164 recipient number; named contacts must match the configured phone identities.'},'message':{'type':'string','description':'Exact text stated and approved by the caller.'},'approval_quote':{'type':'string','description':'Verbatim current caller instruction to send this message to this contact.'}},'required':['recipient','message','approval_quote']}})
     ctx.register_tool(name='eli_phone_propose_call',toolset='eli_phone',handler=propose_outbound,
         schema={'name':'eli_phone_propose_call','description':'Draft a phone call for explicit approval. Does not place a call. The approved exact message is spoken with AI disclosure; any reply is saved for review. Never put patient data or secrets in a call.',
                 'parameters':{'type':'object','properties':{'recipient':{'type':'string','description':'Exact E.164 number'},'message':{'type':'string','description':'Exact message to be spoken after AI disclosure'},'purpose':{'type':'string'}},'required':['recipient','message','purpose']}})

@@ -1,0 +1,19 @@
+name: Verify native phone messaging
+
+on:
+  push:
+    branches: [main]
+    paths: ["integrations/hermes_phone/**", ".github/workflows/phone-integration.yml"]
+  pull_request:
+    paths: ["integrations/hermes_phone/**", ".github/workflows/phone-integration.yml"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify caller approval and delivery receipts
+        run: python -m unittest discover -s integrations/hermes_phone -p test_messaging.py -v
