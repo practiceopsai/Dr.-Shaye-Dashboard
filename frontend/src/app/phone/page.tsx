@@ -65,8 +65,8 @@ export default function PhonePage() {
         {data?<><p>Call <a href={`tel:${data.eli_number}`}>{data.eli_number}</a> from <strong>{data.phone}</strong>.</p>
           <p>{data.bridge_online?"Eli is connected.":"Eli is reconnecting. Accepted requests stay saved."}</p>
           <p>{data.conversation_mode==="live"?"Live conversation is enabled. Speak naturally and interrupt when you need to.":"Phone requests are enabled. Live conversation requires the upgraded phone connection."}</p>
-          <p>Enter your eight digit code when Eli answers. On the Twilio trial, your number must also be verified in Twilio.</p>
-          {data.webhook_url&&<div className="phone-webhook"><h3>Twilio connection</h3>
+          <p>Enter your eight digit code when Eli answers.{data.conversation_mode!=="live"&&" On the Twilio trial, your number must also be verified in Twilio."}</p>
+          {data.conversation_mode!=="live"&&data.webhook_url&&<div className="phone-webhook"><h3>Twilio connection</h3>
             <p>Copy this entire private URL into Twilio → Inbound → Custom → Webhook URL. Select POST and save. Keep the link private.</p>
             <label>Private Twilio webhook<input readOnly value={data.webhook_url} onFocus={event=>event.target.select()}/></label>
             <button onClick={()=>void copyWebhook()}>{webhookCopied?"Webhook copied":"Copy private Twilio webhook"}</button>
@@ -86,7 +86,7 @@ export default function PhonePage() {
           <label>Exact message<textarea required maxLength={1800} value={message} onChange={event=>setMessage(event.target.value)}/></label>
           <button disabled={busy||!data}>Prepare for review</button>
         </form>
-        <p>On the trial, outbound destinations must be verified with Twilio. Provider restrictions may prevent a call; failures appear below.</p>
+        {data?.conversation_mode!=="live"&&<p>On the trial, outbound destinations must be verified with Twilio. Provider restrictions may prevent a call; failures appear below.</p>}
         {data?.outbound.map(call=><article className="phone-item" key={call.id}><div><b>{call.state.replaceAll("_"," ")}</b><span>{call.recipient}</span></div><p>{call.purpose}</p><p className="phone-result">Hello, I&apos;m Eli, an AI assistant. {call.message}</p>
           {call.state==="pending_approval"&&<button disabled={busy||!data.outbound_enabled||call.expires*1000<Date.now()} onClick={()=>void perform(()=>api.approveCall(call.id,call.payload_hash))}>Approve and place this call</button>}
           {["pending_approval","approved","preparing"].includes(call.state)&&<button disabled={busy} onClick={()=>void perform(()=>api.cancelCall(call.id))}>Cancel</button>}
