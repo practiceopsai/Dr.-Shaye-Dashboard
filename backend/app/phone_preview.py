@@ -14,7 +14,8 @@ from fastapi.responses import FileResponse, Response
 
 
 router = APIRouter(prefix="/api/phone", tags=["Phone preview"])
-PREVIEW_AUDIO = Path(__file__).with_name("assets") / "eli-cedar-preview.mp3"
+PREVIEW_AUDIO = Path(__file__).with_name("assets") / "eli-marin-preview.mp3"
+PREVIEW_AUDIO_VERSION = "marin-20260920"
 
 
 @router.get("/preview")
@@ -28,9 +29,16 @@ def preview_instructions() -> Response:
     if not PREVIEW_AUDIO.is_file():
         raise HTTPException(status_code=503, detail="Phone preview audio is unavailable")
     root = Element("Response")
-    SubElement(root, "Play").text = f"https://{domain}/api/phone/preview.mp3"
+    # Change the audio URL with the voice so callers do not hear a cached preview.
+    SubElement(root, "Play").text = (
+        f"https://{domain}/api/phone/preview.mp3?v={PREVIEW_AUDIO_VERSION}"
+    )
     SubElement(root, "Hangup")
-    return Response(tostring(root, encoding="unicode"), media_type="application/xml")
+    return Response(
+        tostring(root, encoding="unicode"),
+        media_type="application/xml",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/preview.mp3")

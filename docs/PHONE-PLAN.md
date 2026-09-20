@@ -1,9 +1,10 @@
 # Eli phone integration
 
-## Current stage: Cedar voice preview
+## Current stage: Marin voice preview
 
 The backend serves a short, explicitly labeled synthetic introduction using
-OpenAI's Cedar voice. It identifies Eli as an AI assistant. The public preview
+OpenAI's Marin voice, with warm, clear feminine delivery and a conversational
+pace. It identifies Eli as an AI assistant. The public preview
 contains no private information and makes no runtime requests to OpenAI or Eli.
 
 In Twilio's trial console, select **Inbound → Custom**, use **POST**, and set
@@ -13,8 +14,11 @@ yet accept requests or hold a conversation.
 
 `RAILWAY_PUBLIC_DOMAIN` supplies the canonical audio URL. The backend does not
 trust caller-supplied host headers to construct that URL. The bundled MP3 is
-available at `/api/phone/preview.mp3`. Preview routes deliberately accept public
-requests because they serve only this fixed, non-sensitive audio.
+available at `/api/phone/preview.mp3`. The TwiML adds a version query parameter
+to the audio URL when the voice changes, so cached audio does not preserve the
+previous voice. The configured Twilio webhook URL stays the same. Preview
+routes deliberately accept public requests because they serve only this fixed,
+non-sensitive audio.
 
 ## Work required for actual conversations
 
@@ -25,7 +29,7 @@ requests because they serve only this fixed, non-sensitive audio.
 - Validate Twilio webhook signatures and bind each conversation to its call.
 - Use durable, deduplicated work for agent turns and action execution. Do not
   retry ambiguous external writes or announce completion without evidence.
-- Generate Cedar audio from Eli's actual reply; authenticate access to private
+- Generate Marin audio from Eli's actual reply; authenticate access to private
   audio and give it a short lifetime.
 - Save requests and verified results in the command center. Requests that need
   approval remain pending until the exact action has been confirmed.
