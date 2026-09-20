@@ -248,9 +248,9 @@ def test_unsigned_trial_full_pin_speech_and_result_flow(trial):
     access=client.get('/api/phone/access')
     assert 'no-store' in access.headers['cache-control']
     incoming=access.json()['webhook_url']
-    assert 'token=' in incoming
+    assert '/api/phone/incoming/0.' in incoming and '?' not in incoming
     auth=trial_action(trial_post(client,incoming,cfg))
-    assert 'token=' in auth and 'scope=call%3A' in auth
+    assert '/api/phone/auth/' in auth and '?' not in auth
     turn=trial_action(trial_post(client,auth,cfg,Digits=pin))
     reply=trial_post(client,turn,cfg,SpeechResult='Draft a packing checklist. Do not contact anyone.')
     assert reply.status_code==200
@@ -262,7 +262,7 @@ def test_unsigned_trial_full_pin_speech_and_result_flow(trial):
     wait=ElementTree.fromstring(reply.content).find('Redirect').text
     delivered=trial_post(client,wait,cfg)
     assert delivered.status_code==200 and '/audio/job/' in delivered.text
-    assert 'token=' in trial_action(delivered)
+    assert '?' not in trial_action(delivered)
     assert len(requests)==5
 
 
@@ -270,7 +270,7 @@ def test_trial_capabilities_are_scoped_and_do_not_replace_bad_signatures(trial):
     cfg,client,record,requests=trial
     url=client.get('/api/phone/access').json()['webhook_url']
     assert trial_post(client,'/api/phone/incoming',cfg).status_code==403
-    assert trial_post(client,url.replace('token=','token=x'),cfg).status_code==403
+    assert trial_post(client,url[:-1]+('0' if url[-1]!='0' else '1'),cfg).status_code==403
     assert trial_post(client,url.replace('/incoming','/auth/forged'),cfg).status_code==403
     assert trial_post(client,url,cfg,From='+12025550102').status_code==403
     assert trial_post(client,url,cfg,AccountSid='AC'+'9'*32).status_code==403
@@ -285,12 +285,15 @@ def test_trial_capabilities_are_scoped_and_do_not_replace_bad_signatures(trial):
 def test_trial_preserves_authentication_with_forwarder_metadata_and_canonical_numbers(trial):
     cfg,client,record,requests=trial
     client.post('/api/phone/access/pin')
-    url=client.get('/api/phone/access').json()['webhook_url']+'&routing=forwarded'
+    url=client.get('/api/phone/access').json()['webhook_url']+'?routing=forwarded'
     reply=trial_post(client,url,cfg,From=' 12025550101',To='12025550100')
     assert '/auth/' in trial_action(reply)
     with phone.store().db() as db:
         assert db.execute('SELECT phone FROM phone_calls').fetchone()[0]==record['from']
-    assert trial_post(client,url+'&token=another',cfg).status_code==403
+    from urllib.parse import urlencode
+    path='/api/phone/incoming';scope='entry:owner@example.com'
+    legacy=path+'?'+urlencode({'scope':scope,'expires':0,'token':phone_trial.token(cfg,path,scope,0)})+'&token=another'
+    assert trial_post(client,legacy,cfg).status_code==403
     assert len(requests)==1
 
 
@@ -335,10 +338,10 @@ def test_trial_followup_token_expires_and_cannot_change_call(trial):
     auth=trial_action(trial_post(client,client.get('/api/phone/access').json()['webhook_url'],cfg))
     assert trial_post(client,auth,cfg,CallSid='CA'+'3'*32).status_code==403
     from urllib.parse import urlencode
-    path=urlsplit(auth).path
+    path=urlsplit(auth).path.rsplit('/',1)[0]
     scope='call:'+record['sid']
     expires=int(time.time())-1
-    old=path+'?'+urlencode({'scope':scope,'expires':expires,'token':phone_trial.token(cfg,path,scope,expires)})
+    old=path+f'/{expires}.{phone_trial.token(cfg,path,scope,expires)}'
     assert trial_post(client,old,cfg).status_code==403
     assert len(requests)==1
 
@@ -356,7 +359,7 @@ def test_unsigned_trial_callback_keeps_pin_gate(trial):
     with phone.store().db() as db:
         assert db.execute('SELECT authenticated FROM phone_calls').fetchone()[0]==0
     turn=trial_action(trial_post(client,auth,cfg,Digits=pin,**fields))
-    assert '/turn/' in turn and 'token=' in turn
+    assert '/turn/' in turn and '?' not in turn
     assert len(requests)==2
 
 
@@ -367,3 +370,6 @@ def test_private_webhook_query_is_redacted_from_access_log():
     assert phone.PrivateAudioLogFilter().filter(record)
     assert 'private-capability' not in record.getMessage()
     assert '?[redacted]' in record.getMessage()
+    record.args=('client','POST','/api/phone/incoming/0.'+'a'*64,'1.1',200)
+    phone.PrivateAudioLogFilter().filter(record)
+    assert 'a'*64 not in record.getMessage() and '/[private]' in record.getMessage()

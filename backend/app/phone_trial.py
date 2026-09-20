@@ -12,7 +12,6 @@ import logging
 import re
 import time
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlencode
 
 import httpx
 from fastapi import HTTPException
@@ -42,22 +41,29 @@ def webhook_url(base, path, cfg, scope):
     if not getattr(cfg, 'phone_trial_proxy_enabled', False):
         return base + path
     expires = 0 if scope.startswith('entry:') else int(time.time()) + 1200
-    return base + path + '?' + urlencode({'scope': scope, 'expires': expires,
-                                         'token': token(cfg, path, scope, expires)})
+    # The trial forwarder did not preserve the separate query credential fields.
+    # Keep the capability in one URL-safe path segment instead.
+    return base + path + f'/{expires}.{token(cfg, path, scope, expires)}'
 
 
 async def validate_request(request, values, cfg, identities):
     if not getattr(cfg, 'phone_trial_proxy_enabled', False):
         return False
     query = request.query_params
+    path = request.url.path
+    path_key = re.fullmatch(r'(/api/phone/.+)/(0|[0-9]{10})\.([a-f0-9]{64})', path)
     # Forwarders may append routing parameters. Authenticate our three fields
     # exactly once, without requiring unrelated query parameters to disappear.
-    if any(len(query.getlist(key)) != 1 for key in ('scope', 'expires', 'token')):
+    if not path_key and any(len(query.getlist(key)) != 1 for key in ('scope', 'expires', 'token')):
         return reject('missing or repeated URL credential field')
-    path = request.url.path
+    if path_key:
+        path, expiry_text, supplied_token = path_key.groups()
+    else:
+        expiry_text, supplied_token = query['expires'], query['token']
     actor = None
     if path == '/api/phone/incoming':
-        actor = query['scope'].removeprefix('entry:')
+        actor = next((actor for actor in identities
+                      if hmac.compare_digest(token(cfg, path, 'entry:'+actor, 0), supplied_token)), None) if path_key else query['scope'].removeprefix('entry:')
         if actor not in identities:
             return reject('entry identity is not configured')
         if values.get('From') and canonical_number(values['From']) != identities[actor]['phone']:
@@ -70,17 +76,17 @@ async def validate_request(request, values, cfg, identities):
     else:
         scope = 'call:' + values['CallSid']
     try:
-        expires = int(query['expires'])
+        expires = int(expiry_text)
     except ValueError:
         return reject('invalid URL expiry')
-    if query['scope'] != scope:
+    if not path_key and query['scope'] != scope:
         return reject('URL scope does not match call')
     if scope.startswith('entry:'):
         if expires != 0:
             return reject('invalid entry expiry')
     elif not time.time() < expires <= time.time() + 1210:
         return reject('expired continuation URL')
-    if not re.fullmatch(r'[a-f0-9]{64}', query['token']) or not hmac.compare_digest(token(cfg, path, scope, expires), query['token']):
+    if not re.fullmatch(r'[a-f0-9]{64}', supplied_token) or not hmac.compare_digest(token(cfg, path, scope, expires), supplied_token):
         return reject('URL capability does not match')
 
     # Never trust a body claiming to be Twilio. Confirm its exact call, account,

@@ -12,7 +12,7 @@ rules with a separate voice chatbot.
    authenticated calls. The registered phone number is configured by the operator.
 2. Copy the **private Twilio webhook** from your signed-in Phone page into
    Twilio > Inbound > Custom, select POST and save. Copy the entire URL, including
-   its query parameters. Keep it private and use the URL for the selected caller.
+   its private key. Keep it private and use the URL for the selected caller.
    The original `/api/phone/preview` remains a harmless standalone voice sample.
 3. On the trial, verify each caller and recipient in Twilio. Use the trial number
    assigned by Twilio for that recipient; it may differ between recipients.
@@ -81,8 +81,14 @@ From/To endpoints, recent creation and active call status. Provider failures den
 access. Caller allowlisting, PINs, call-step nonces and exact approvals still apply.
 Normal signed webhooks retain signature verification; a supplied invalid signature
 does not fall back to trial authentication. No public endpoint issues capabilities.
-Private URLs are returned only to their signed-in owner with no-store headers,
-and query strings are redacted from application access logs. Rotating the bridge
+Private URLs are returned only to their signed-in owner with no-store headers.
+Actual trial retries showed missing or repeated query credential fields despite
+the copied URL being valid. Current URLs carry the expiry and HMAC in one safe
+path segment; the entry owner is resolved by its HMAC and continuations remain
+bound to the exact call and route. Separate credential query parameters are no
+longer needed. Application logs redact private path segments and query strings;
+provider/edge logs must also be treated as private and never pasted into reports.
+Rotating the bridge
 token invalidates the capabilities; disable trial mode after migration to direct
 signed Voice webhooks. Trial callbacks still need a real acceptance test.
 

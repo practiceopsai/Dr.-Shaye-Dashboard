@@ -35,9 +35,11 @@ log = logging.getLogger('uvicorn.error')
 
 class PrivateAudioLogFilter(logging.Filter):
     def filter(self, record):
-        if isinstance(record.args, tuple) and len(record.args) == 5 and isinstance(record.args[2],str) and '/api/phone/' in record.args[2] and '?' in record.args[2]:
+        if isinstance(record.args, tuple) and len(record.args) == 5 and isinstance(record.args[2],str) and '/api/phone/' in record.args[2]:
             args=list(record.args)
-            args[2]=args[2].split('?',1)[0]+'?[redacted]'
+            args[2]=re.sub(r'/(?:0|[0-9]{10})\.[a-f0-9]{64}(?=\?|$)', '/[private]', args[2])
+            if '?' in args[2]:
+                args[2]=args[2].split('?',1)[0]+'?[redacted]'
             record.args=tuple(args)
         return True
 
@@ -212,6 +214,7 @@ def wait_response(root, job_id, call_id, hop=0):
 
 
 @router.post("/api/phone/incoming")
+@router.post("/api/phone/incoming/{trial_key}")
 async def incoming(request: Request):
     form = await twilio_form(request)
     if form.get('To') != settings().twilio_phone_number:
@@ -243,6 +246,7 @@ async def incoming(request: Request):
 
 
 @router.post("/api/phone/auth/{nonce}")
+@router.post("/api/phone/auth/{nonce}/{trial_key}")
 async def authenticate_call(nonce: str, request: Request):
     form = await twilio_form(request)
     with store().db() as db:
@@ -281,6 +285,7 @@ async def authenticate_call(nonce: str, request: Request):
 
 
 @router.post("/api/phone/turn/{nonce}")
+@router.post("/api/phone/turn/{nonce}/{trial_key}")
 async def accept_turn(nonce: str, request: Request):
     form = await twilio_form(request)
     text = form.get('SpeechResult', '').strip()
@@ -318,6 +323,7 @@ async def accept_turn(nonce: str, request: Request):
 
 
 @router.post('/api/phone/callback/{job_id}/{nonce}')
+@router.post('/api/phone/callback/{job_id}/{nonce}/{trial_key}')
 async def request_callback(job_id: str, nonce: str, request: Request):
     form = await twilio_form(request)
     with store().db() as db:
@@ -340,6 +346,7 @@ async def request_callback(job_id: str, nonce: str, request: Request):
 
 
 @router.post('/api/phone/wait/{job_id}/{hop}')
+@router.post('/api/phone/wait/{job_id}/{hop}/{trial_key}')
 async def wait_for_turn(job_id: str, hop: int, request: Request):
     form = await twilio_form(request)
     with store().db() as db:
@@ -546,6 +553,7 @@ def cancel_outbound(identifier: str, user: AuthUser = Depends(require_auth)):
 
 
 @router.post('/api/phone/outbound/{identifier}/answer')
+@router.post('/api/phone/outbound/{identifier}/answer/{trial_key}')
 async def answer_outbound(identifier: str, request: Request):
     form = await twilio_form(request)
     with store().db() as db:
@@ -580,6 +588,7 @@ async def answer_outbound(identifier: str, request: Request):
 
 
 @router.post('/api/phone/outbound/{identifier}/reply')
+@router.post('/api/phone/outbound/{identifier}/reply/{trial_key}')
 async def outbound_reply(identifier: str, request: Request):
     form = await twilio_form(request)
     text = form.get('SpeechResult', '').strip()[:3000]
@@ -595,6 +604,7 @@ async def outbound_reply(identifier: str, request: Request):
 
 
 @router.post('/api/phone/outbound/{identifier}/status')
+@router.post('/api/phone/outbound/{identifier}/status/{trial_key}')
 async def outbound_status(identifier: str, request: Request):
     form = await twilio_form(request)
     state = form.get('CallStatus')
