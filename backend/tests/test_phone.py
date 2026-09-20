@@ -71,6 +71,16 @@ def test_signature_and_identity_required(setup):
     assert phone.store().jobs('owner@example.com')==[]
 
 
+def test_rejection_diagnostics_do_not_log_private_call_data(setup, caplog):
+    cfg,_,client,_=setup
+    data={'AccountSid':cfg.twilio_account_sid,'CallSid':'CA'+'2'*32,
+          'From':'+12025550101','Digits':'12345678','SpeechResult':'Private request'}
+    response=client.post('/api/phone/incoming',data=data,headers={'X-Twilio-Signature':'not-a-valid-private-signature'})
+    assert response.status_code==403
+    assert 'signature_present=True account_matches=True call_id_valid=True' in caplog.text
+    assert all(value not in caplog.text for value in [*data.values(),'not-a-valid-private-signature'])
+
+
 def test_access_codes_not_persisted_or_cross_account(setup):
     cfg,app,client,user=setup
     pin=client.post('/api/phone/access/pin').json()['pin']

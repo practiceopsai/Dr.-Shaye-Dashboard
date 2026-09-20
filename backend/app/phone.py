@@ -29,6 +29,7 @@ VOICE_INSTRUCTIONS = (
 )
 ACTIVE = {"queued", "claimed", "running", "uncertain"}
 _stores = {}
+log = logging.getLogger('uvicorn.error')
 
 
 class PrivateAudioLogFilter(logging.Filter):
@@ -148,8 +149,15 @@ async def twilio_form(request: Request):
     signed = url + "".join(key + values[key] for key in sorted(values))
     expected = base64.b64encode(hmac.new(cfg.twilio_auth_token.encode(), signed.encode(), hashlib.sha1).digest()).decode()
     if not hmac.compare_digest(expected, request.headers.get("x-twilio-signature", "")):
+        # Trial forwarding may differ from direct Voice webhooks. Record only
+        # verification facts, never the signature, PIN, transcript, or numbers.
+        log.warning('Phone webhook rejected: signature; signature_present=%s account_matches=%s call_id_valid=%s',
+                    bool(request.headers.get('x-twilio-signature')),
+                    values.get('AccountSid') == cfg.twilio_account_sid,
+                    bool(re.fullmatch(r'CA[a-fA-F0-9]{32}', values.get('CallSid', ''))))
         raise HTTPException(403, "Invalid phone provider signature")
     if values.get("AccountSid") != cfg.twilio_account_sid or not re.fullmatch(r"CA[a-fA-F0-9]{32}", values.get("CallSid", "")):
+        log.warning('Phone webhook rejected: account or call identity')
         raise HTTPException(403, "Invalid call identity")
     return values
 
@@ -196,6 +204,7 @@ def wait_response(root, job_id, hop=0):
 async def incoming(request: Request):
     form = await twilio_form(request)
     if form.get('To') != settings().twilio_phone_number:
+        log.warning('Phone webhook rejected: incoming destination mismatch')
         raise HTTPException(403)
     actor = next((actor for actor, entry in callers().items() if entry['phone'] == form.get('From')), None)
     if not actor:
