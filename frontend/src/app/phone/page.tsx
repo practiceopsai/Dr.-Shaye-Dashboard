@@ -64,6 +64,7 @@ export default function PhonePage() {
       <section className="phone-card"><h2>Your phone access</h2>
         {data?<><p>Call <a href={`tel:${data.eli_number}`}>{data.eli_number}</a> from <strong>{data.phone}</strong>.</p>
           <p>{data.bridge_online?"Eli is connected.":"Eli is reconnecting. Accepted requests stay saved."}</p>
+          <p>{data.conversation_mode==="live"?"Live conversation is enabled. Speak naturally and interrupt when you need to.":"Phone requests are enabled. Live conversation requires the upgraded phone connection."}</p>
           <p>Enter your eight digit code when Eli answers. On the Twilio trial, your number must also be verified in Twilio.</p>
           {data.webhook_url&&<div className="phone-webhook"><h3>Twilio connection</h3>
             <p>Copy this entire private URL into Twilio → Inbound → Custom → Webhook URL. Select POST and save. Keep the link private.</p>

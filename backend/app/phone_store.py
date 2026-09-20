@@ -40,6 +40,14 @@ class PhoneStore:
                 CREATE TABLE IF NOT EXISTS phone_bridge_health (
                     id INTEGER PRIMARY KEY CHECK(id=1), seen REAL NOT NULL, version TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS phone_jobs_actor ON phone_jobs(actor, created);
+                CREATE TABLE IF NOT EXISTS phone_live_streams (
+                    call_id TEXT PRIMARY KEY, ticket_hash TEXT NOT NULL,
+                    created REAL NOT NULL, stream_id TEXT, state TEXT NOT NULL DEFAULT 'pending',
+                    closed REAL, reason TEXT NOT NULL DEFAULT '');
+                CREATE TABLE IF NOT EXISTS phone_live_delegations (
+                    call_id TEXT NOT NULL, delegation_id TEXT NOT NULL, job_id TEXT NOT NULL,
+                    caller_text TEXT NOT NULL,
+                    PRIMARY KEY(call_id, delegation_id));
             """)
 
     @contextmanager
@@ -71,8 +79,10 @@ class PhoneStore:
 
     def jobs(self, actor: str):
         with self.db() as db:
-            return [dict(r) for r in db.execute("""SELECT id,transcript,state,created,updated,result,error,
-                callback_requested FROM phone_jobs WHERE actor=? ORDER BY created DESC LIMIT 30""", (actor,))]
+            return [dict(r) for r in db.execute("""SELECT j.id,COALESCE(d.caller_text,j.transcript) AS transcript,
+                j.state,j.created,j.updated,j.result,j.error,j.callback_requested FROM phone_jobs j
+                LEFT JOIN phone_live_delegations d ON d.job_id=j.id
+                WHERE j.actor=? ORDER BY j.created DESC LIMIT 30""", (actor,))]
 
     def outbound(self, actor: str):
         with self.db() as db:

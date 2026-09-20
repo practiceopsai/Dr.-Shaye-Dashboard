@@ -6,3 +6,4 @@ pydantic-settings==2.10.1
 python-multipart==0.0.20
 google-auth==2.56.3
 requests==2.32.5
+websockets==16.0

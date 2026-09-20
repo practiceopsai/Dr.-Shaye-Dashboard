@@ -280,7 +280,11 @@ async def authenticate_call(nonce: str, request: Request):
                     SubElement(root, "Play").text = audio_url('job', job['id'])
                 elif job:
                     say(root, job['result'][:2000] or "Your request needs attention in the command center.")
-        gather_request(root, next_nonce, call['id'])
+        from .phone_live import live_enabled, connect_stream
+        if live_enabled(settings()):
+            connect_stream(root, db, call['id'])
+        else:
+            gather_request(root, next_nonce, call['id'])
         return save_event(db, call, nonce, next_nonce, root)
 
 
@@ -410,6 +414,7 @@ def phone_access(response: Response, user: AuthUser = Depends(require_auth)):
         bridge = db.execute('SELECT seen FROM phone_bridge_health WHERE id=1').fetchone()
     response.headers['Cache-Control'] = 'no-store, private'
     return {'phone': entry['phone'], 'eli_number': settings().twilio_phone_number,
+            'conversation_mode': 'live' if getattr(settings(), 'phone_live_enabled', False) and not settings().phone_trial_proxy_enabled else 'request',
             'webhook_url': voice_url('/api/phone/incoming', actor=user.email),
             'pin_configured': bool(access and access['pin_hash']),
             'bridge_online': bool(bridge and time.time()-bridge['seen'] < 30),

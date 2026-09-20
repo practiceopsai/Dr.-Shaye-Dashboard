@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     phone_enabled: bool = False
     phone_outbound_enabled: bool = False
     phone_trial_proxy_enabled: bool = False
+    phone_live_enabled: bool = False
+    phone_live_model: str = "gpt-live-1"
     phone_public_url: str = ""
     phone_bridge_token: str = ""
     phone_callers_json: str = "{}"
