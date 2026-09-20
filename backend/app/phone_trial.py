@@ -20,6 +20,17 @@ from fastapi import HTTPException
 log = logging.getLogger('uvicorn.error')
 
 
+def reject(reason):
+    # Reasons are static strings; no private URL/body values enter the log.
+    log.warning('Phone webhook rejected: trial %s', reason)
+    return False
+
+
+def canonical_number(value):
+    value = value.strip()
+    return '+' + value if value.isascii() and value.isdigit() else value
+
+
 def token(cfg, path, scope, expires):
     if not cfg.phone_bridge_token:
         raise HTTPException(503, 'Phone verification is not configured')
@@ -39,13 +50,20 @@ async def validate_request(request, values, cfg, identities):
     if not getattr(cfg, 'phone_trial_proxy_enabled', False):
         return False
     query = request.query_params
-    if len(query.multi_items()) != 3 or set(query) != {'scope', 'expires', 'token'}:
-        return False
+    # Forwarders may append routing parameters. Authenticate our three fields
+    # exactly once, without requiring unrelated query parameters to disappear.
+    if any(len(query.getlist(key)) != 1 for key in ('scope', 'expires', 'token')):
+        return reject('missing or repeated URL credential field')
     path = request.url.path
+    actor = None
     if path == '/api/phone/incoming':
-        actor = next((actor for actor, entry in identities.items() if entry['phone'] == values.get('From')), None)
-        if not actor or values.get('To') != cfg.twilio_phone_number:
-            return False
+        actor = query['scope'].removeprefix('entry:')
+        if actor not in identities:
+            return reject('entry identity is not configured')
+        if values.get('From') and canonical_number(values['From']) != identities[actor]['phone']:
+            return reject('entry caller does not match link owner')
+        if values.get('To') and canonical_number(values['To']) != cfg.twilio_phone_number:
+            return reject('entry destination does not match')
         scope = 'entry:' + actor
     elif match := re.fullmatch(r'/api/phone/outbound/([a-f0-9]{32})/(answer|status)', path):
         scope = 'outbound:' + match[1]
@@ -54,16 +72,16 @@ async def validate_request(request, values, cfg, identities):
     try:
         expires = int(query['expires'])
     except ValueError:
-        return False
+        return reject('invalid URL expiry')
     if query['scope'] != scope:
-        return False
+        return reject('URL scope does not match call')
     if scope.startswith('entry:'):
         if expires != 0:
-            return False
+            return reject('invalid entry expiry')
     elif not time.time() < expires <= time.time() + 1210:
-        return False
+        return reject('expired continuation URL')
     if not re.fullmatch(r'[a-f0-9]{64}', query['token']) or not hmac.compare_digest(token(cfg, path, scope, expires), query['token']):
-        return False
+        return reject('URL capability does not match')
 
     # Never trust a body claiming to be Twilio. Confirm its exact call, account,
     # endpoints and active lifetime through the account-authenticated REST API.
@@ -83,16 +101,25 @@ async def validate_request(request, values, cfg, identities):
         log.warning('Phone webhook rejected: trial call lookup; error_type=%s', type(exc).__name__)
         raise HTTPException(503, 'Phone provider could not verify this call') from None
     matches = (call.get('sid') == values['CallSid'] and call.get('account_sid') == cfg.twilio_account_sid
-               and call.get('from') == values.get('From') and call.get('to') == values.get('To')
+               and (not values.get('From') or call.get('from') == canonical_number(values['From']))
+               and (not values.get('To') or call.get('to') == canonical_number(values['To']))
                and -60 <= time.time() - created <= 1200)
+    if actor:
+        matches = matches and call.get('from') == identities[actor]['phone'] and call.get('to') == cfg.twilio_phone_number
     if not matches:
         log.warning('Phone webhook rejected: trial call record mismatch or age limit')
         return False
     if path.endswith('/status'):
-        return call.get('status') == values.get('CallStatus')
-    if call.get('status') not in {'in-progress', 'ringing', 'queued'} or call.get('end_time'):
-        log.warning('Phone webhook rejected: trial call is not active')
-        return False
-    if path == '/api/phone/incoming':
-        return call.get('direction') == 'inbound'
+        if call.get('status') != values.get('CallStatus'):
+            return reject('call status does not match provider record')
+    elif call.get('status') not in {'in-progress', 'ringing', 'queued'} or call.get('end_time'):
+        return reject('call is not active')
+    if actor and call.get('direction') != 'inbound':
+        return reject('entry call is not inbound')
+    # Only provider-authenticated canonical endpoints reach PIN/session handling.
+    if values.get('From') != call.get('from') or values.get('To') != call.get('to'):
+        log.info('Phone trial forwarded endpoint format normalized from verified provider record')
+    if set(query) - {'scope', 'expires', 'token'}:
+        log.info('Phone trial extra routing parameters retained outside URL credentials')
+    values['From'], values['To'] = call.get('from', ''), call.get('to', '')
     return True

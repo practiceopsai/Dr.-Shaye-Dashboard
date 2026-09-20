@@ -282,6 +282,27 @@ def test_trial_capabilities_are_scoped_and_do_not_replace_bad_signatures(trial):
     assert requests==[]
 
 
+def test_trial_preserves_authentication_with_forwarder_metadata_and_canonical_numbers(trial):
+    cfg,client,record,requests=trial
+    client.post('/api/phone/access/pin')
+    url=client.get('/api/phone/access').json()['webhook_url']+'&routing=forwarded'
+    reply=trial_post(client,url,cfg,From=' 12025550101',To='12025550100')
+    assert '/auth/' in trial_action(reply)
+    with phone.store().db() as db:
+        assert db.execute('SELECT phone FROM phone_calls').fetchone()[0]==record['from']
+    assert trial_post(client,url+'&token=another',cfg).status_code==403
+    assert len(requests)==1
+
+
+def test_trial_missing_form_endpoints_are_checked_against_link_owner_in_provider_record(trial):
+    cfg,client,record,requests=trial
+    client.post('/api/phone/access/pin')
+    url=client.get('/api/phone/access').json()['webhook_url']
+    assert '/auth/' in trial_action(trial_post(client,url,cfg,From='',To=''))
+    record['from']='+12025550102'
+    assert trial_post(client,url,cfg,From='',To='').status_code==403
+
+
 @pytest.mark.parametrize('field,value',[
     ('from','+12025550999'),('to','+12025550999'),('account_sid','AC'+'9'*32),
     ('status','completed'),('direction','outbound-api'),('end_time','Sun, 20 Sep 2026 20:00:00 GMT'),
