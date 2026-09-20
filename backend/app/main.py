@@ -13,6 +13,7 @@ from .integrations import ComposioMCPClient, EliAgentClient
 from .models import ApprovalRequest, DashboardPayload, ExecuteRequest, FeedbackRequest, FeedbackResponse, VoiceIntent, VoiceRequest, VoiceResponse
 from .priorities import build_dashboard
 from .outbox import PendingMap
+from .phone_preview import router as phone_preview_router
 from .security import AuthUser, contains_phi, payload_hash, require_auth
 
 
@@ -31,6 +32,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Eli Command Center API", version="1.1.0", lifespan=lifespan)
+app.include_router(phone_preview_router)
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 _cache: dict[str, Any] = {}
