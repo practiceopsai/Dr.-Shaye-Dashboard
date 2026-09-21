@@ -56,7 +56,7 @@ def context_for(call, cfg):
     return facts
 
 
-def archive(call, fragments, model):
+def archive(call, fragments, model, delegated=()):
     """A conversation record never enters the action queue or authorizes a call."""
     turns = []
     for f in fragments:
@@ -66,8 +66,9 @@ def archive(call, fragments, model):
             continue
         if turns and turns[-1]['role'] == f['role'] and len(turns[-1]['text'])+len(f['text']) <= 12000:
             turns[-1]['text'] += f['text']
+            turns[-1]['delegated'] = turns[-1]['delegated'] or f.get('id') in delegated
         else:
-            turns.append({'role': f['role'], 'text': f['text'][:12000]})
+            turns.append({'role': f['role'], 'text': f['text'][:12000], 'delegated': f.get('id') in delegated})
     # Check joined fragments too: a clinical identifier can span deltas.
     turns = [t for t in turns if not contains_phi(t['text']) and not PRIVATE.search(t['text'])]
     if not turns:

@@ -154,6 +154,7 @@ class Conversation:
         self.fragments = deque(maxlen=600)
         self.seen = set()
         self.consumed = set()
+        self.delegated = set()
         self.last_input = 0.0
 
     def append(self, event):
@@ -431,6 +432,7 @@ class LiveCall:
                 job_id = enqueue(self.call, identifier, transcript, caller_text)
                 self.last_job = job_id
                 self.conversation.consumed.update(consumed)
+                self.conversation.delegated.update(consumed)
             await self.acknowledge(identifier, job_id)
         except asyncio.CancelledError:
             # Only stop polling/audio. The durable native job remains untouched.
@@ -585,6 +587,7 @@ class LiveCall:
                         'A hangup is not cancellation or approval. No need to reply to a simple goodbye.\n'+transcript)
             job=enqueue(self.call,'hangup-final',transcript,caller,final=True)
             self.conversation.consumed.update(consumed)
+            self.conversation.delegated.update(consumed)
             self.last_job=job
 
     async def run(self):
@@ -622,7 +625,7 @@ class LiveCall:
             except ValueError:
                 log.warning('Final phone turn requires review; it was not executed')
             if not self.machine_detected:
-                presence.archive(self.call,self.conversation.fragments,self.cfg.phone_live_model)
+                presence.archive(self.call,self.conversation.fragments,self.cfg.phone_live_model,self.conversation.delegated)
 
 
 @router.websocket(PATH)

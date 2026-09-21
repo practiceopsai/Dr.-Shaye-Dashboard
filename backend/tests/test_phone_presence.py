@@ -136,3 +136,12 @@ def test_explicit_callback_survives_clarification_before_first_attempt(configure
     outgoing=phone.store().outbound(call['actor'])
     assert len(outgoing)==1 and outgoing[0]['state']=='approved'
     with phone.store().db() as db: assert db.execute('SELECT callback_job FROM phone_outbound').fetchone()[0]==root
+
+
+def test_archive_marks_existing_native_evidence_without_creating_another_task(configured):
+    call,job=queued(configured)
+    presence.archive(call,[{'id':'u1','role':'user','text':'Email Fabio.'}], 'gpt-live-1',{'u1'})
+    with phone.store().db() as db:
+        payload=json.loads(db.execute('SELECT payload FROM phone_conversations').fetchone()[0])
+        assert payload['turns'][0]['delegated'] is True
+        assert db.execute('SELECT count(*) FROM phone_jobs').fetchone()[0]==1

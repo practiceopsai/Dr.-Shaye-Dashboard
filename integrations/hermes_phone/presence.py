@@ -98,9 +98,11 @@ def ingest(record, identities):
             if not db.has_platform_message_id(sid,key):
                 db.append_message(sid,turn['role'],turn['text'],platform_message_id=key,
                                   display_metadata={'source':'phone audio transcript','delivery':'may include interrupted speech; never a tool receipt'})
-            if turn['role']=='user':
+            if turn['role']=='user' and not turn.get('delegated'):
                 reply=turns[i+1]['text'] if i+1<len(turns) and turns[i+1]['role']=='assistant' else ''
                 # Existing source-checked learning projects principal words into shared RAG.
+                # Delegated speech already has native turn evidence. Do not count
+                # the same utterance twice toward preferences or rank evidence.
                 # It rejects operator-as-principal attribution and deduplicates retries.
                 svc=module.services()
                 if svc.evidence.principal_session(sid):
