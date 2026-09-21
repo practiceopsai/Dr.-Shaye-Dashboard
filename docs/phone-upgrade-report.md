@@ -54,6 +54,14 @@ archive retains approximate transcript-fragment timestamps, separately from
 playback evidence. Local input activity and forwarded audio are explicitly traced.
 No real phone calls or external messages were sent during this investigation.
 
+Rollback release `3aea1ac1a4f1f0a9eb13ce2c13d4e317530e87ca` is deployed.
+[Release CI](https://github.com/practiceopsai/Dr.-Shaye-Dashboard/actions/runs/35622633340)
+passed 179 backend tests and 46 frontend tests/build. All deployed phone-module
+hashes match the corrective source. Native gateway modules are unchanged; its
+phone bridge is connected. Direct reads remain enabled, access code remains off,
+and follow-ups remain in the app. The operator has been asked for a fresh real-call
+acceptance test; no result is assumed.
+
 Audit baseline: public commit f9d331d; production hashes verified 2026-09-21 UTC.
 Native gateway running, phone connected, bridge heartbeat <1 second. No active work
 at inspection. Current request authorizes phased implementation/deployment, not
