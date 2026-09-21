@@ -55,6 +55,10 @@ Never imply a send before its receipt or repeat an acknowledgment for the same t
 An unqualified text means iMessage. Only use WhatsApp when explicitly requested.
 If iMessage is disconnected, state that clearly; never switch channels silently.
 
+Backchannel policy: Stay quiet while the caller is talking. A short pause or
+background noise is not an invitation to take the floor. Do not say mm-hmm,
+go ahead, or an apology repeatedly. Wait for the caller's completed thought.
+
 Interruption policy: Yield when the caller interrupts and listen to the correction.
 An interruption stops speech, not backend work. Delegate changed or canceled tasks.
 
@@ -294,15 +298,11 @@ class LiveCall:
         self.delivered_notices = set()
         self.voice_metrics = set()
         self.context_notices = set()
-        self.interrupted = False
-        self.last_recovery = 0.0
         self.machine_detected = False
         self.hangup_delegation = False
         self.context_updated = presence.context_for(call,cfg).get('updated_at')
         self.runtime=Runtime(call.get('id',''),phone.store())
         self.last_playback_mark=0.
-        self.last_snapshot=0.
-        self.input_voiced_ms=0.
         self.unaccepted=set()
         self.callback_notices = set()
         if call.get('outbound_id'):
@@ -329,6 +329,7 @@ class LiveCall:
     async def monitor_access(self):
         while True:
             await asyncio.sleep(2)
+            self.settle_tasks()
             self.runtime.flush()
             with phone.store().db() as db:
                 row = db.execute('SELECT authenticated FROM phone_calls WHERE id=?', (self.call['id'],)).fetchone()
@@ -368,34 +369,19 @@ class LiveCall:
                     raise ValueError('invalid_audio')
                 samples = base64.b64decode(payload, validate=True)
                 self.runtime.observe_input(samples)
-                # A delegation can precede the caller's final word. Use the input
-                # audio's quiet period as well as settled transcript delivery before
-                # committing a task. GPT-Live still controls conversational turn taking.
-                if samples and sum(MULAW_ENERGY[x] for x in samples) / len(samples) > 200 ** 2:
+                # RMS is only a conservative task/notice quiet-time observation.
+                # It cannot distinguish speech from line clicks, noise or echo.
+                # Never clear, mute or inject an apology from this observation.
+                energy=sum(MULAW_ENERGY[x] for x in samples)/len(samples) if samples else 0
+                if energy > 200 ** 2:
                     if time.monotonic()-self.last_speech>.35:
                         self.runtime.floor='user'
-                        self.runtime.event('speech.user.started')
-                        # Twilio buffers audio. Clear queued speech on barge-in;
-                        # marks from cleared audio are NOT proof it was heard.
-                        if self.active_notice:
-                            self.voice_metric(self.active_notice['job_id'],'interrupted')
-                            self.delivered_notices.add(self.active_notice['job_id'])
-                        if time.monotonic()-self.last_output<1:
-                            self.runtime.interrupt()
-                            self.interrupted=True
-                            if time.monotonic()-self.last_recovery>8:
-                                self.last_recovery=time.monotonic()
-                                self.interrupted=False
-                                await self.append('thinking','The caller has the floor; stop speaking and listen to their complete thought. '
-                                                  'At your next appropriate turn, briefly acknowledge the overlap once. Do not interrupt to apologize or resume an old result automatically.')
-                        self.notice_mark=None
-                        self.active_notice=None
-                        await self.ws.send_json({'event':'clear','streamSid':self.stream_id})
+                        self.runtime.event('audio.input_activity',status='rms_only:'+str(round(energy**.5)))
                     self.last_speech = time.monotonic()
                     self.runtime.last_user_end=self.last_speech
                 elif self.runtime.floor=='user' and time.monotonic()-self.last_speech>.35:
                     self.runtime.floor='none'
-                    self.runtime.event('speech.user.paused',status='acoustic_not_final')
+                    self.runtime.event('audio.input_quiet',status='not_a_turn_boundary')
                 await self.send({'type': 'session.input_audio.append', 'audio': payload})
 
     async def receive_model(self):
@@ -417,7 +403,6 @@ class LiveCall:
                 if voiced:
                     self.last_output=time.monotonic()
                 allowed=self.runtime.audio_allowed(event,voiced,len(samples)/8,time.monotonic()-self.last_speech<.35)
-                if self.unaccepted and voiced:allowed=False
                 if allowed:
                     if voiced:self.runtime.observe_output(samples)
                     if voiced:
@@ -430,6 +415,7 @@ class LiveCall:
                         self.notice_audio=True
                     await self.ws.send_json({'event': 'media', 'streamSid': self.stream_id,
                                              'media': {'payload': event['delta']}})
+                    self.runtime.event('audio.forwarded',duration_ms=len(samples)/8,status='voiced' if voiced else 'quiet')
                     if voiced and time.monotonic()-self.last_playback_mark>=.2:
                         self.last_playback_mark=time.monotonic()
                         name='audio-'+secrets.token_hex(8);self.runtime.mark(name)
@@ -441,6 +427,16 @@ class LiveCall:
                     self.runtime.event('transcript.duplicate');continue
                 if kind=='session.input_transcript.delta':
                     self.runtime.user_turn(self.conversation.turn_id,self.latest_caller())
+                    self.runtime.event('transcript.user',duration_ms=event['end_ms']-event.get('start_ms',0),
+                                       status=str(event.get('start_ms',0))+':'+str(event['end_ms']))
+                    # Confirmed caller words invalidate an unfinished notice's
+                    # delivery receipt. They do not mute audio or request speech.
+                    if self.active_notice:
+                        self.voice_metric(self.active_notice['job_id'],'interrupted')
+                        self.delivered_notices.add(self.active_notice['job_id'])
+                        self.runtime.interrupt()
+                        self.notice_mark=None
+                        self.active_notice=None
                     latest=self.latest_caller()
                     if presence.stop_calls(latest):
                         presence.revoke_callbacks(self.call['actor'])
@@ -450,6 +446,8 @@ class LiveCall:
                         return
                 if kind=='session.output_transcript.delta':
                     self.runtime.last_generated=event.get('delta','')
+                    self.runtime.event('transcript.assistant',duration_ms=event['end_ms']-event.get('start_ms',0),
+                                       status=str(event.get('start_ms',0))+':'+str(event['end_ms']))
                     if self.active_notice:
                         self.notice_text=True
             elif kind == 'session.delegation.created':
@@ -584,6 +582,16 @@ class LiveCall:
                               'Do not add another acknowledgment or repeat your previous sentence. '
                               'Continue listening. Nothing is confirmed executed yet.',identifier)
 
+    def settle_tasks(self):
+        # Operational IDs stay in the application ledger, never the audio model's
+        # continuous thought stream. Only useful, concise task facts are appended.
+        with phone.store().db() as db:
+            for key in list(self.runtime.pending):
+                row=db.execute('SELECT state FROM phone_jobs WHERE id=?',(key,)).fetchone()
+                if row and row['state'] in {'completed','failed','cancelled','uncertain','waiting_for_input','resumed'}:
+                    self.runtime.pending.pop(key,None)
+                    self.runtime.event('task.settled',task_id=key,status=row['state'])
+
     async def deliver_ready_notice(self):
         if self.ending or not self.quiet():
             if not self.ending:
@@ -592,29 +600,7 @@ class LiveCall:
                         self.voice_metric(row['job_id'],'deferred_for_caller')
             return
         now=time.monotonic()
-        if now-self.last_snapshot>2:
-            self.last_snapshot=now
-            with phone.store().db() as db:
-                for key in list(self.runtime.pending):
-                    row=db.execute('SELECT state FROM phone_jobs WHERE id=?',(key,)).fetchone()
-                    if row and row['state'] in {'completed','failed','cancelled','uncertain','waiting_for_input','resumed'}:
-                        self.runtime.pending.pop(key,None)
-                        self.runtime.event('task.settled',task_id=key,status=row['state'])
-            snapshot=self.runtime.snapshot()
-            snapshot.pop('clock_utc',None)
-            # Audio offsets change continuously and are kept in local traces.
-            # Only meaningful conversation state changes belong in model context.
-            snapshot.pop('played_audio_ms',None);snapshot.pop('generated_audio_ms',None)
-            encoded=json.dumps(snapshot,sort_keys=True)
-            if encoded!=getattr(self,'last_context_snapshot',''):
-                self.last_context_snapshot=encoded
-                await self.append('thinking','Operational state only. Do not acknowledge this update: '+encoded)
         self.settle_conversation()
-        if self.interrupted and now-self.last_recovery>8:
-            self.interrupted=False
-            self.last_recovery=now
-            await self.append('thinking','You overlapped the caller. Follow their latest thought. At your next appropriate turn, '
-                              'briefly acknowledge the interruption once; do not restart an older result or interrupt to apologize.')
         if self.active_notice:
             if self.notice_audio and self.notice_text and not self.notice_mark:
                 self.notice_mark=secrets.token_hex(16)

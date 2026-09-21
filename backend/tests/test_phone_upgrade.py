@@ -84,7 +84,7 @@ def test_cleared_playback_marks_do_not_claim_audio_was_heard(configured):
     rt.output_end=2000;rt.mark('cleared');rt.interrupt()
     assert not rt.played('cleared') and rt.played_end==1000
     assert not rt.heard_fragment(1000,1500)
-    assert not rt.audio_allowed({'start_ms':2000,'end_ms':2200},True,200,False)
+    assert rt.audio_allowed({'start_ms':2000,'end_ms':2200},True,200,False)
     assert rt.audio_allowed({'start_ms':2200,'end_ms':2400},False,200,False)
     assert rt.audio_allowed({'start_ms':2400,'end_ms':2600},True,200,False)
     assert not rt.audio_allowed({'start_ms':2400,'end_ms':2600},True,200,False)
@@ -158,4 +158,4 @@ def test_unconfirmed_generated_words_preserved_separately_from_heard_history(con
     assert len(p['turns'])==1 and p['turns'][0]['role']=='user'
     assert p['generated_unconfirmed'][0]['playback']=='unverified'
     context=presence.context_for(call,cfg)
-    assert 'shorten the meetings' in context['prior_generated_speech'][0]
+    assert 'prior_generated_speech' not in context  # Archive is not a replay prompt.

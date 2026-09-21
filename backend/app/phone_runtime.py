@@ -47,7 +47,7 @@ class Runtime:
         self.floor='none';self.connection='connected';self.response_id='';self.interrupted=set()
         self.pending={};self.last_user_end=0.;self.first_audio=False
         self.output_end=0.;self.played_end=0.;self.marks={};self.cancelled_spans=[]
-        self.output_fence=False;self.output_silence_ms=0.;self.audio_spans=set()
+        self.audio_spans=set()
         self.last_input_seq=0;self.last_generated='';self.last_played=''
         self.audio_events=set();self.output_fingerprints={};self.last_echo=0.
         self.transcript_clock_aligned=True
@@ -84,8 +84,8 @@ class Runtime:
         self.cancelled_spans.append((self.played_end,self.output_end))
         if self.response_id:self.interrupted.add(self.response_id)
         self.marks.clear()  # Marks returned by Twilio clear are NOT played receipts.
-        self.output_fence=True;self.output_silence_ms=0
-        self.event('response.interrupted',status='caller_overlap')
+        # Observation only; Live owns speech interruption.
+        self.event('response.interrupted',status='transcribed_overlap')
         self.response_id=''
 
     def audio_allowed(self,event,voiced,duration_ms,user_speaking):
@@ -108,13 +108,10 @@ class Runtime:
             # duration is a playout counter, NOT the transcript's session clock.
             self.transcript_clock_aligned=False
             self.output_end+=duration_ms
-        if self.output_fence:
-            self.output_silence_ms=0 if voiced else self.output_silence_ms+duration_ms
-            # Require the continuous provider to actually yield, not just the
-            # local caller-energy timeout, before allowing subsequent speech.
-            if self.output_silence_ms>=120:self.output_fence=False
-            if voiced:return False
-        return not user_speaking
+        # Never gate the native full-duplex stream using local input RMS.
+        # Dropped samples cannot be recovered by the model, which is unaware
+        # that its words were discarded. Preserve its own turn decisions.
+        return True
 
     def observe_output(self,samples):
         # Short-lived nonreversible fingerprints diagnose exact media loopback.

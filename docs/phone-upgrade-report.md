@@ -1,5 +1,59 @@
 # Eli production voice upgrade — living implementation report
 
+## Regression correction — later on 21 September 2026
+
+**The earlier synthetic acceptance claims below did not establish real-call audio
+quality. The next two real calls exposed a regression.** The speech controls from
+the last upgrade are rolled back in the correction described here; earlier phase
+descriptions are historical, not the current audio contract.
+
+Both actual calls ended normally. Six trace events explicitly show local audio
+interruption from a raw input RMS threshold. There are no call-window provider
+errors or Twilio error notifications. Neither call was recorded, and the old
+archive flattened transcript fragments; it cannot establish the exact heard word
+at every cut or whether a particular spike was human speech, noise or acoustic echo.
+
+Reproduced defects and rollback:
+
+- The added output fence could discard subsequent voiced output until the model
+  emitted 120 ms of silence, even after the caller was quiet. Removed.
+- A pending delegation suppressed all voiced output, including unrelated ongoing
+  conversation. Removed; durable capture and the single acceptance fact remain.
+- Raw 20 ms volume spikes cleared Twilio playback and injected overlap/apology
+  prompts. This older control amplified the new fence and was removed too. Input
+  RMS now only delays optional notices/task capture; GPT-Live owns speech timing.
+- Recurring turn/topic/response-ID snapshots were injected into Live thinking.
+  These operational details now stay in application state and metadata traces.
+- Unconfirmed generated speech from previous calls was injected into new sessions.
+  That replay is rolled back; the private archive and existing persona/RAG remain.
+
+New regression tests failed before rollback and pass afterward. A production-host
+A/B used identical cached synthetic speech and intermittent line clicks, with
+isolated temporary databases and simulated work. Both runs closed normally:
+
+| Measurement | Before rollback | After rollback |
+|---|---:|---:|
+| Application playback clears | 15 | 0 |
+| Generated voiced audio not forwarded | 5,500 ms | 40 ms at session closure |
+| Appended context/instruction messages | 14 | 2 |
+| Unsolicited apology responses | Repeated | None |
+
+The repaired run followed a short-to-long-meetings correction while the draft task
+continued. A caller interruption intentionally stopped the prior answer; the fixed
+test duration also ended the final answer. These are synthetic observations, not
+a guarantee about carrier echo or human handset quality. Two earlier laptop runs
+had network resets and are not used as completed acceptance tests.
+
+The old general-agent lookup still took about 61 seconds in the first real call;
+its result was held after the topic changed. This rollback does not claim to speed
+up unsupported history lookups or reconnect the operator's calendar/iMessage.
+
+Private evidence includes both calls' archived transcripts, trace timelines,
+provider metadata, call-window service logs and the full A/B results. The new
+archive retains approximate transcript-fragment timestamps, separately from
+playback evidence. Local input activity and forwarded audio are explicitly traced.
+No real phone calls or external messages were sent during this investigation.
+
 Audit baseline: public commit f9d331d; production hashes verified 2026-09-21 UTC.
 Native gateway running, phone connected, bridge heartbeat <1 second. No active work
 at inspection. Current request authorizes phased implementation/deployment, not

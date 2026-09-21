@@ -48,10 +48,8 @@ def context_for(call, cfg):
         facts['phone_work']=[dict(r) for r in db.execute('''SELECT COALESCE(d.caller_text,j.transcript) request,j.state,
             substr(j.result,1,600) verified_result,j.question FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
             WHERE j.actor=? AND j.created>? ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
-        previous=db.execute('SELECT payload FROM phone_conversations WHERE actor=? ORDER BY created DESC LIMIT 2',(call.get('actor',''),)).fetchall()
-        facts['prior_generated_speech']=[t['text'][:1200] for p in previous
-            for t in json.loads(p['payload']).get('generated_unconfirmed',[])][-8:]
-        facts['generated_speech_rule']='Earlier generated speech has unverified playback. Use only as tentative context when relevant; never assume the caller heard or agreed, and never restart it automatically.'
+        # Unconfirmed generated speech remains in the private audit archive.
+        # Reinjecting it into new calls recycles unheard answers and apology loops.
     if row and row['user_id'] == entry.get('user_id') and time.time()-row['updated'] < 300:
         packet = json.loads(row['packet'])
         facts.update(packet)
@@ -84,7 +82,18 @@ def archive(call, fragments, model, delegated=()):
     if not turns:
         return
     generated=[t for t in generated if not contains_phi(t['text']) and not PRIVATE.search(t['text'])]
-    payload = json.dumps({'model': model, 'turns': turns,'generated_unconfirmed':generated}, ensure_ascii=False)
+    # Preserve approximate provider transcript times for diagnosis. These are
+    # NOT audio-playout times. Earlier archives merged roles and lost this map.
+    timeline=[]
+    if not contains_phi(''.join(f['text'] for f in fragments)) and not PRIVATE.search(''.join(f['text'] for f in fragments)):
+        timeline=[{k:f[k] for k in ('role','text','start_ms','end_ms','turn_id','playback') if k in f}
+                  for f in fragments if not automated_audio(f['text'])]
+    payload = json.dumps({'model': model, 'turns': turns,'generated_unconfirmed':generated,
+                          'transcript_timeline':timeline}, ensure_ascii=False)
+    if len(payload)>100000:
+        # Retain the existing bounded memory record even if the diagnostic map
+        # would exceed its transport budget.
+        payload=json.dumps({'model':model,'turns':turns,'generated_unconfirmed':generated},ensure_ascii=False)
     if len(payload)>100000:
         return
     with phone.store().db() as db:

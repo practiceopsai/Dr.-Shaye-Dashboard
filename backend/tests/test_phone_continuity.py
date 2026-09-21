@@ -125,16 +125,21 @@ class Socket:
     async def send_json(self,event): self.sent.append(event)
 
 
-def test_barge_in_clears_playback_without_marking_interrupted_result_heard(configured):
+def test_transcribed_barge_in_invalidates_receipt_without_muting_the_live_stream(configured):
     call,identifier=queued(configured);finish(configured,identifier)
-    ws=Socket([{'event':'media','streamSid':STREAM,'media':{'track':'inbound','payload':base64.b64encode(b'\x00'*160).decode()}},
-               {'event':'mark','streamSid':STREAM,'mark':{'name':'old-mark'}},{'event':'stop','streamSid':STREAM}])
-    voice=live.LiveCall(ws,FakeModel(),configured[0],call,STREAM)
+    ws=Socket([{'event':'mark','streamSid':STREAM,'mark':{'name':'old-mark'}},{'event':'stop','streamSid':STREAM}])
+    model=FakeModel();voice=live.LiveCall(ws,model,configured[0],call,STREAM)
     voice.active_notice=phone.store().notices(call['actor'])[0];voice.notice_mark='old-mark'
+    async def speech():
+        await model.queue.put(fragment('interrupt','Wait, I have a correction.'))
+        await model.queue.put({'type':'session.closed'})
+        await voice.receive_model()
+    asyncio.run(speech())
     asyncio.run(voice.receive_phone())
-    assert ws.sent[0]['event']=='clear'
+    assert not any(e['event']=='clear' for e in ws.sent)
     assert phone.store().notices(call['actor'])[0]['heard_at'] is None
     assert any(u['status']=='interrupted' for u in phone.store().updates(identifier))
+    assert phone.store().jobs(call['actor'])[0]['state']=='completed'
 
 
 def test_only_playback_mark_acknowledges_delivery(configured):

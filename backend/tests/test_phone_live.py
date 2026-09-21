@@ -165,7 +165,8 @@ class FakeModel:
                                   'delegation': {'id': 'delegate1', 'target': 'client'}})
             # Real Live sessions can delegate before the final qualifier arrives.
             await self.queue.put(fragment('u2', ' Do not send anything.', end=1800))
-            await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'YWNr'})
+            # Ordinary conversation is allowed while a delegation is captured.
+            await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'bGlzdGVuaW5n'})
         elif kind == 'session.commentary.append' or (kind == 'session.thinking.append' and event['content'].startswith('TASK_ACCEPTED')):
             await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'YWNr' if event['content'].startswith('TASK_ACCEPTED') else 'cmVzdWx0'})
         elif kind == 'session.close':
@@ -192,7 +193,7 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
         ws.send_json({'event': 'start', 'start': start})
         ws.send_json({'event': 'media', 'streamSid': STREAM,
                       'media': {'track': 'inbound', 'payload': base64.b64encode(b'\xff' * 160).decode()}})
-        assert ws.receive_json()['media']['payload'] == 'YWNr'
+        assert ws.receive_json()['media']['payload'] == 'bGlzdGVuaW5n'
         headers = {'Authorization': 'Bearer ' + cfg.phone_bridge_token}
         deadline = time.monotonic() + 5
         job = None
@@ -204,10 +205,15 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
         reply = client.post('/internal/phone/jobs/' + job['id'], headers=headers,
                             json={'claim': job['claim'], 'state': 'completed', 'result': 'Set an agenda and review the notes.'})
         assert reply.status_code == 200
+        acknowledgments = 0
         while True:
             output=ws.receive_json()
             if output.get('event')=='mark':
                 ws.send_json(output)
+                continue
+            if output['media']['payload']=='YWNr':
+                acknowledgments += 1
+                assert acknowledgments == 1
                 continue
             assert output['media']['payload']=='cmVzdWx0'
             break
