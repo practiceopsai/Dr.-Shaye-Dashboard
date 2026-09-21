@@ -199,14 +199,14 @@ scope and idempotent call evidence ingestion.
 
 - Backend: **245 tests passed**, including two queue-to-artifact-to-provider fixtures.
 - Native plugin: **88 tests passed**, locally and against the installed Hermes imports.
-- Installed gateway adapter: **8 tests passed**; persona/RAG/archive probe passed.
+- Installed gateway adapter: **9 tests passed**; persona/RAG/archive probe passed.
 - Existing frontend: **46 tests passed**; no frontend code changes.
 - Actual structured planner: **8/8 scenarios passed**, with no executor or external sends.
 - Actual GPT-Live audio: baseline 20/20 answered, median **1287.335 ms**;
   final candidate 20/20 answered, median **1180.47 ms**, maximum **1470.05 ms**,
   no provider errors or unwanted task creation. Median is 8.3% below baseline and
   below the **1416.069 ms** regression ceiling. All 20 remain above **800 ms**.
-- Final candidate under simulated background load: result pending at this checkpoint.
+- Actual-model run with two simulated running jobs and slow background workers: **20/20** answers, median **1122.08 ms**, maximum **1308.71 ms**, no provider errors. No real tasks or external sends ran in that load fixture; all 20 turns still exceeded 800 ms.
 
 | Acceptance | Evidence / remaining work |
 | --- | --- |
@@ -219,7 +219,7 @@ scope and idempotent call evidence ingestion.
 | G research / third-party findings | Actual planner plus approval and delivery fixture passes; real external delivery not exercised. |
 | H priority | Actual planner assigns independent email priority 900; queue priority/dependencies tested. |
 | I barge-in cancellation | Backend cancellation boundary tested; immediate handset playback stop remains unverified. |
-| J conversation under load | Slow-worker/DB fixture leaves audio forwarding responsive; actual-model load benchmark pending. |
+| J conversation under load | Slow-worker/DB fixture leaves audio forwarding responsive; actual-model load benchmark answered 20/20 at 1122.08 ms median; absolute 800 ms fails. |
 | K 20-turn regression | Passes the baseline +10% median limit. Absolute 800 ms ceiling fails. |
 | L restart | Canonical queue and native journal survive; uncertain writes are not repeated. |
 | M voice to text | Authorized text endpoint cancels the voice task; native ingress authorization/dedup tests pass. Handset/channel acceptance remains open. |
@@ -237,3 +237,9 @@ plugin and its locked Node dependencies, deploy the backend, verify source hashe
 and bridge health, then perform a handset acceptance session. Additive ledger tables
 can remain on rollback; stop new intake and reconcile in-flight effects before
 restoring an older executor. Never replay historical jobs as a migration.
+
+A late result from a superseded native execution is retired only after its action
+receipts have been flushed; it cannot overwrite the current version or block other
+results. An installed-adapter regression test covers that outbox ordering.
+The final voice benchmark precedes only a status-question hold-release correction;
+20 focused voice tests passed after that branch-only fix.
