@@ -52,6 +52,10 @@ flowchart LR
    root task. User identity and the existing permissions/persona/RAG hooks remain.
    A clarification continuation reuses its effect root and session. Existing
    provider-attempt ledgers, exact-action checks and readback remain authoritative.
+   Self-contained drafts return their complete content as the durable app result;
+   storage discovery and external tools are blocked for those jobs. Referenced
+   documents, replies and explicitly named external destinations retain tool access.
+   A generic checklist can be labeled general without inventing trip details.
 6. Completion/questions become `session.thinking.append` context once per call.
    GPT-Live chooses whether and when they matter. The bridge cannot use commentary
    appends to force speech. Context delivery is not marked as human hearing.
@@ -81,9 +85,8 @@ back to executing a compound request without decomposition.
 
 ## Validation
 
-- Backend suite: 190 tests passed before final dependency/notices regressions were
-  added; final release CI is the authoritative count.
-- Installed native: 54 unit checks and 6 installed-adapter checks passed, including
+- Initial release CI: 191 backend and 46 frontend tests plus frontend build passed.
+- Installed native: 56 unit checks and 6 installed-adapter checks passed, including
   concurrent job sessions, caller identity, and restart/no-replay behavior.
 - Native persona projection and scoped retrieval/evidence probes passed.
 - Actual planner API: independent text/email, two drafts with shared no-send
@@ -94,7 +97,24 @@ back to executing a compound request without decomposition.
   jobs completed, topic pivot/correction followed, zero commentary appends, zero
   playback clears, and zero milliseconds of generated voiced audio dropped.
   This was synthetic audio, not a human phone acceptance call or real send.
-- Human handset acceptance is pending deployment and the operator's call.
+- Human handset acceptance: September 21, approximately 19:16 UTC. The operator
+  reported "conversation felt natural." The call trace shows the model/time
+  question answered directly, independent draft jobs overlapping, and the model
+  following the caller's correction from shorter to longer meetings. No playback
+  clears or locally dropped-audio events were recorded. The conversation was
+  archived through the existing native evidence path. Transcripts describe generated
+  words, not proof of every word heard; the operator supplied the listening feedback.
+- The same call exposed an execution defect: a hello-email draft spent 171 seconds
+  discovering external draft storage and completed about 127 seconds after hangup.
+  Native tool output confirms an unsent AgentMail draft. A packing checklist asked
+  for optional item details and remains waiting for input. These are not two
+  completed draft jobs, and no message-send acceptance is claimed.
+- Follow-up: self-contained drafts now have explicit app storage and a tool guard,
+  with regression coverage for complete-content instructions, blocked discovery,
+  preserved essential clarification and referenced-document access. Conversation-only
+  intake audit records are excluded from app tasks and summaries. The accepted
+  audio/turn-taking behavior is unchanged. This follow-up has automated validation;
+  a second human phone performance result is not claimed.
 
 ## Primary API references
 

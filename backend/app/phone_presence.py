@@ -61,7 +61,8 @@ def context_for(call, cfg):
         row = db.execute('SELECT * FROM phone_voice_context WHERE actor=?', (call.get('actor',''),)).fetchone()
         facts['phone_work']=[dict(r) for r in db.execute('''SELECT COALESCE(d.caller_text,j.transcript) request,j.state,
             substr(j.result,1,600) verified_result,j.question FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-            WHERE j.actor=? AND j.created>? AND j.state!='expanded' ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
+            WHERE j.actor=? AND j.created>? AND j.state!='expanded' AND NOT (j.execution_class='intake' AND j.state='completed')
+            ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
         # Unconfirmed generated speech remains in the private audit archive.
         # Reinjecting it into new calls recycles unheard answers and apology loops.
     if row and row['user_id'] == entry.get('user_id') and time.time()-row['updated'] < 300:
@@ -122,7 +123,8 @@ def summaries(actor):
         for c in calls:
             items = [dict(r) for r in db.execute('''SELECT j.id,COALESCE(d.caller_text,j.transcript) request,j.state,j.result,j.error,j.question,
                 n.heard_at FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-                LEFT JOIN phone_notices n ON n.job_id=j.id WHERE j.call_id=? AND j.actor=? AND j.state!='expanded' ORDER BY j.created''', (c['id'],actor))]
+                LEFT JOIN phone_notices n ON n.job_id=j.id WHERE j.call_id=? AND j.actor=? AND j.state!='expanded'
+                AND NOT (j.execution_class='intake' AND j.state='completed') ORDER BY j.created''', (c['id'],actor))]
             if items:
                 output.append({**dict(c),'items':items})
         return output

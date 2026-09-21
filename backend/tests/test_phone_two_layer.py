@@ -129,3 +129,13 @@ def test_failed_prerequisite_stops_child_instead_of_leaving_it_queued(configured
     with phone.store().db() as db:
         child=db.execute('SELECT state,error FROM phone_jobs WHERE id=?',(ids[1],)).fetchone()
     assert child['state']=='failed' and 'required earlier task' in child['error']
+
+
+def test_conversation_only_intake_is_audit_not_a_user_task(configured):
+    call,row=intake(configured,'What do you think about longer meetings?')
+    assert dispatch.commit_plan(row,{'conversation_only':True,'jobs':[]})==[]
+    assert phone.store().claim() is None
+    assert phone.store().jobs(call['actor'])==[]
+    assert live.presence.context_for(call,configured[0])['phone_work']==[]
+    with phone.store().db() as db:
+        assert db.execute('SELECT state FROM phone_jobs WHERE id=?',(row['id'],)).fetchone()['state']=='completed'

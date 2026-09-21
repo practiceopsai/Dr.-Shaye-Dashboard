@@ -158,7 +158,8 @@ class PhoneStore:
             jobs = [dict(r) for r in db.execute("""SELECT j.id,COALESCE(d.caller_text,j.transcript) AS transcript,
                 j.state,j.created,j.updated,j.result,j.error,j.callback_requested,j.question,j.resume_job,j.parent_id,j.cancel_requested FROM phone_jobs j
                 LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-                WHERE j.actor=? AND j.state!='expanded' ORDER BY CASE WHEN j.state='waiting_for_input' THEN 0 ELSE 1 END,j.created DESC LIMIT 100""", (actor,))]
+                WHERE j.actor=? AND j.state!='expanded' AND NOT (j.execution_class='intake' AND j.state='completed')
+                ORDER BY CASE WHEN j.state='waiting_for_input' THEN 0 ELSE 1 END,j.created DESC LIMIT 100""", (actor,))]
             for job in jobs:
                 job['actions'] = [dict(r) for r in db.execute("SELECT event_id,status,content FROM phone_job_updates WHERE job_id=? AND kind='action' ORDER BY created,event_id", (job['id'],))]
         return jobs

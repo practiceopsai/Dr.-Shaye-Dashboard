@@ -97,11 +97,23 @@ def simple_request(text):
                 or (re.search(r'\b(send|text)\b',text) and re.search(r'\b(saying|say|hello|hi|message)\b',text)))
 
 
+def simple_app_draft(job):
+    plan=job.get('plan') or {}
+    if isinstance(plan,str):plan=json.loads(plan)
+    fresh=job.get('transcript','').rsplit('New caller speech: ',1)[-1]
+    # Referenced records or an explicit external destination still need tools.
+    return plan.get('atomic_kind')=='draft' and not re.search(
+        r'\b(?:based on|using|from|reply|respond|latest|recent|last|attached|attachment|file|folder|document|'
+        r'gmail|outlook|drive|docs|notion|vault|dropbox|save (?:it |this )?(?:in|to|under))\b',fresh,re.I)
+
+
 def before_tool(settings, tool_name='', args=None, **kwargs):
     active = current(settings)
     if not active:
         return None
     perf, job, fresh = active
+    if simple_app_draft(job) and tool_name!='eli_phone_clarify':
+        return {'block':True,'message':'This is a self-contained draft saved in the command center, not an external mailbox or file. Return the complete draft in your final response; the phone bridge durably saves that result. No storage discovery, shell, mail tools or vault write is needed. Ask only if an essential content detail is missing.'}
     atomic=job.get('plan') or {}
     if isinstance(atomic,str):
         atomic=json.loads(atomic)
@@ -185,7 +197,12 @@ def context(settings, schemas, **kwargs):
         return None
     perf, job, fresh = active
     names = {actor:{'name':identity.get('name'),'phone':identity.get('phone')} for actor,identity in settings.get('identities',{}).items()}
-    return {'context': 'Prepared phone operations: call tool_call(name, arguments) directly using these schemas; no tool_describe or skill catalog is needed for them. '
+    draft_context = ('This is a self-contained draft for the command center. Your final response is the saved artifact: '
+        'the phone bridge durably stores it and displays it in the app. Return the COMPLETE draft, not just a claim that it was saved. '
+        'No external mailbox, file, vault write, storage destination or discovery tool is needed. '
+        'For a generic checklist, provide a clearly labeled general checklist; optional personalization is not a blocker. '
+        'Do not invent specific trip details. Ask only for information essential to correctness.\n') if simple_app_draft(job) else ''
+    return {'context': draft_context+'Prepared phone operations: call tool_call(name, arguments) directly using these schemas; no tool_describe or skill catalog is needed for them. '
         'For latest email, identify the inbox: eli_phone_latest_email reads only Eli AgentMail. My email refers to the authenticated caller, not Eli; use existing personal/practice account routing or clarify. '
         'For a new simple email send, prefer eli_phone_send_email. Unqualified text means iMessage; WhatsApp requires the caller to name WhatsApp explicitly. '
         'Missing essential details require eli_phone_clarify(question) before ending this turn. Do not just put a question in a completed response. '

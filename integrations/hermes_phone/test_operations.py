@@ -150,6 +150,23 @@ class OperationsTests(unittest.TestCase):
         fresh=performance.Performance(self.perf.path)
         self.assertEqual(fresh.feedback()[0]['failures'],1)
 
+    def test_self_contained_draft_is_saved_as_result_without_storage_discovery(self):
+        self.job.update(plan={'atomic_kind':'draft'},transcript='New caller speech: Save an email draft to Fabio saying hello, do not send it.')
+        active=(self.perf,self.job,self.job['transcript'])
+        with patch.object(performance,'current',return_value=active):
+            ctx=performance.context(self.settings,operations.SCHEMAS)['context']
+            self.assertIn('Return the COMPLETE draft',ctx)
+            for name in ['search_files','terminal','email_status','email_send','skill_view','eli_context']:
+                self.assertTrue(performance.before_tool(self.settings,tool_name=name)['block'],name)
+            self.assertIsNone(performance.before_tool(self.settings,tool_name='eli_phone_clarify'))
+
+    def test_referenced_or_external_draft_can_still_use_tools(self):
+        for text in ['Draft a reply to my latest email','Draft using the attached agenda',
+                     'Save this draft in Gmail','Write a document in Drive']:
+            self.assertFalse(performance.simple_app_draft({'plan':{'atomic_kind':'draft'},'transcript':'New caller speech: '+text}),text)
+        self.assertFalse(performance.simple_app_draft({'plan':{'atomic_kind':'email'},'transcript':'Send Fabio hello'}))
+        self.assertTrue(performance.simple_app_draft({'plan':'{"atomic_kind":"draft"}','transcript':'New caller speech: Save a packing checklist draft'}))
+
     def test_action_progress_requires_receipt_and_is_idempotent(self):
         active=performance.current(self.settings,**self.kw)
         with patch.object(performance,'current',return_value=active):
