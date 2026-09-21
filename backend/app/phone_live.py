@@ -342,8 +342,11 @@ class LiveCall:
     async def wait_for_result(self, identifier, job_id):
         # Progress is separate from execution. Never restart a tool because the
         # caller interrupts, a status update fails, or a task takes >90 seconds.
-        await self.append('instructions', 'The request is accepted. If you have not already acknowledged it, '
-                          'briefly tell the caller you are on it, then remain available. Nothing is confirmed sent yet.', identifier)
+        last_input = max((f['end_ms'] for f in self.conversation.fragments if f['role']=='user'), default=float('inf'))
+        acknowledged = any(f['role']=='assistant' and f['end_ms']>last_input for f in self.conversation.fragments)
+        if not acknowledged:
+            await self.append('instructions', 'The request is accepted. If you have not already acknowledged it, '
+                              'briefly tell the caller you are on it, then remain available. Nothing is confirmed sent yet.', identifier)
         started = time.monotonic()
         next_progress = started + 6
         seen = set()
@@ -365,6 +368,9 @@ class LiveCall:
                         stage = event['content']
                 if job['state'] == 'completed':
                     await self.append('commentary', 'Verified response from the existing Eli system: ' + job['result'], identifier)
+                    with phone.store().db() as db:
+                        db.execute("INSERT OR IGNORE INTO phone_job_updates SELECT id,'result_to_voice','timing','','submitted',cast((?-created)*1000 AS INTEGER),'',? FROM phone_jobs WHERE id=?",
+                                   (time.time(),time.time(),job_id))
                     return
                 if job['state'] in {'failed', 'uncertain'}:
                     await self.append('commentary', 'I could not confirm the outcome of that request. The existing work needs review '
@@ -373,7 +379,7 @@ class LiveCall:
                 now = time.monotonic()
                 if now >= next_progress and now - max(self.last_speech, self.conversation.last_input) >= .8:
                     content = ("Your earlier request is still running; this one is waiting behind it. I'm still here."
-                               if job['state'] == 'queued' else stage or "I'm still working on that request. I don't have a confirmed result yet.")
+                               if job['state'] == 'queued' else stage or "I'm still working on that request. You can keep talking.")
                     if now - started >= 30:
                         content += ' You can keep talking; I will let you know when the result arrives.'
                     await self.append('commentary', content, identifier)

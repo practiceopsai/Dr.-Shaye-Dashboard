@@ -278,3 +278,17 @@ def test_hangup_cancels_result_wait_without_cancelling_work(configured):
         with pytest.raises(asyncio.CancelledError):await task
     asyncio.run(check())
     assert phone.store().jobs(call['actor'])[0]['state']=='queued'
+
+
+def test_existing_spoken_acknowledgment_is_not_repeated(configured):
+    cfg,_=configured
+    call=live.activate_stream(authenticated_stream(configured),cfg)
+    job_id=live.enqueue(call,'ack-test','Check email.','Check email.')
+    with phone.store().db() as db:
+        db.execute("UPDATE phone_jobs SET state='completed',result='The lookup is ready.' WHERE id=?",(job_id,))
+    model=FakeModel();live_call=live.LiveCall(None,model,cfg,call,STREAM)
+    live_call.conversation.append(fragment('u1','Check email.',end=1000))
+    live_call.conversation.append(fragment('a1',"I'm checking now.",end=1500,role='assistant'))
+    asyncio.run(live_call.wait_for_result('ack-test',job_id))
+    assert not any(e['type']=='session.instructions.append' for e in model.sent)
+    assert any(e['event_id']=='result_to_voice' for e in phone.store().updates(job_id))
