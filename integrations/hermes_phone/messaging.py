@@ -89,8 +89,8 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
         derived=authorized(db,job,args,channel)
         if (status_question(quote) or normalize(quote) not in normalized
                 or (not derived and not re.search(r'(?<!\w)' + re.escape(normalize(message)) + r'(?!\w)', normalize(quote)))
-                or (channel == 'whatsapp' and not re.search(r'\bwhats\s*app\b', quote, re.I))
-                or (channel == 'imessage' and (not re.search(r'\b(?:text|imessage)\b',quote,re.I)
+                or (channel == 'whatsapp' and not derived and not re.search(r'\bwhats\s*app\b', quote, re.I))
+                or (channel == 'imessage' and ((not derived and not re.search(r'\b(?:text|imessage)\b',quote,re.I))
                     or (not (typed_imessage or derived) and re.search(r'\b(?:whats\s*app|sms|email)\b',quote,re.I))))
                 or not re.search(r'\b(send|text|message|tell)\b', quote, re.I)
                 or re.search(r"\b(?:do not|don't|dont|never)\s+(?:send|text|message)|\bcancel\b", fresh, re.I)):

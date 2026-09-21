@@ -103,6 +103,35 @@ class TaskActionTests(unittest.TestCase):
         articles.run(self.job,self.settings,self.perf,fetch=lambda u:FEED,send=send)
         self.assertTrue(performance.missing_send_receipt(self.perf,calendar))
 
+    def test_article_short_channel_confirmation_survives_native_guard(self):
+        send,sender=self.article()
+        quote='Find any AI article and send the link to Fabio.\nYes, correct'
+        self.job['transcript']='New caller speech: '+quote
+        self.job['plan']['article'].update(approval_quote=quote,confirmed_proposals=[{'question_id':'article-question','spoken_prompt':'Send the article by WhatsApp, correct?','answer':'Yes, correct'}])
+        with self.perf.db() as db:db.execute('UPDATE work SET payload=? WHERE id=?',(json.dumps(self.job),self.job['id']))
+        self.assertTrue(articles.run(self.job,self.settings,self.perf,fetch=lambda u:FEED,send=send)['success'])
+        sender.assert_called_once()
+        spec=self.job['plan']['article']
+        spec['confirmed_proposals'][0]['spoken_prompt']='Email or WhatsApp?'
+        self.assertFalse(articles.channel_approved(spec,quote))
+        spec['confirmed_proposals'][0]['spoken_prompt']='Send it by WhatsApp?'
+        spec['confirmed_proposals'][0]['answer']='No'
+        self.assertFalse(articles.channel_approved(spec,quote))
+
+    def test_article_email_confirmation_reaches_email_guard(self):
+        from phone_task_tests import operations
+        quote='Find an AI article and send the link to Fabio.\nYes, correct'
+        self.job.update(transcript='New caller speech: '+quote,plan={'operation':'find_send_article','atomic_kind':'article','required_receipts':['email'],
+            'article':{'channel':'email','query':'AI','selection':'any','recipient':'fabio@example.com','approval_quote':quote,
+                'confirmed_proposals':[{'question_id':'article-question','spoken_prompt':'Send the article by email, correct?','answer':'Yes, correct'}]}})
+        self.mail.get_message.return_value={'message_id':'article-email-one','to':['fabio@example.com'],'subject':'Message from Eli'}
+        invoke=Mock(side_effect=lambda name,args:{'message_id':'article-email-one','thread_id':'thread','task':{'task_id':'task'}} if name=='email_send' else {'success':True})
+        with patch.object(operations,'current',return_value=(self.perf,self.job,self.job['transcript'])):
+            send=lambda channel,args:operations.send_email(args,self.settings,services=self.svc,invoke=invoke)
+            result=articles.run(self.job,self.settings,self.perf,fetch=lambda u:FEED,send=send)
+        self.assertTrue(result['source_verified']);self.assertFalse(performance.missing_send_receipt(self.perf,self.job))
+        self.assertEqual(sum(c.args[0]=='email_send' for c in invoke.call_args_list),1)
+
     def test_feed_failure_never_sends(self):
         send,sender=self.article()
         self.assertFalse(articles.run(self.job,self.settings,self.perf,fetch=lambda u:b'<!DOCTYPE rss><rss/>',send=send)['success'])

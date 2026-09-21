@@ -35,12 +35,25 @@ def init(db):
     db.execute('CREATE TABLE IF NOT EXISTS phone_article_artifacts(root_id TEXT PRIMARY KEY,actor TEXT,payload TEXT,created REAL)')
 
 
+def channel_approved(spec,quote):
+    patterns={'email':r'\be-?mail\b','imessage':r'\b(?:text|imessage)\b','whatsapp':r'\bwhats\s*app\b'}
+    channel=spec['channel']
+    if re.search(patterns[channel],quote,re.I):return True
+    for h in spec.get('confirmed_proposals',[]):
+        answer=h.get('answer','');prompt=h.get('spoken_prompt','')
+        if not h.get('question_id') or not answer or answer not in quote:continue
+        if not re.fullmatch(r"\s*(?:(?:yes|yeah|yep|correct|right|exactly|that['’]s correct|that['’]s right|that is correct|okay|ok)[,.!\s]*)+",answer,re.I):continue
+        # "Email or WhatsApp?" followed by "yes" selects neither option.
+        if {name for name,pattern in patterns.items() if re.search(pattern,prompt,re.I)}=={channel}:return True
+    return False
+
+
 def authorized(db,job,args,channel):
     """Only the exact immutable server-selected artifact may relax dictation."""
     plan=job.get('plan') or {}
     if isinstance(plan,str):plan=json.loads(plan)
     spec=plan.get('article',{})
-    if plan.get('operation')!='find_send_article' or spec.get('channel')!=channel:return False
+    if plan.get('operation')!='find_send_article' or spec.get('channel')!=channel or not channel_approved(spec,args.get('approval_quote','')):return False
     try:row=db.execute('SELECT actor,payload FROM phone_article_artifacts WHERE root_id=?',(job.get('root_id') or job['id'],)).fetchone()
     except Exception:return False
     if not row or row[0]!=job['actor']:return False
@@ -56,6 +69,7 @@ def run(job,settings,perf,*,fetch=None,send=None):
     quote=spec['approval_quote'];channel=spec['channel'];root=job.get('root_id') or job['id']
     if (plan.get('operation')!='find_send_article' or channel not in {'email','imessage','whatsapp'}
         or not quote or quote not in source or not spec.get('query')
+        or not channel_approved(spec,quote)
         or not re.search(r'\b(article|link)\b',quote,re.I)
         or not re.search(r'\b(send|email|text|share)\b',quote,re.I)):
         raise ValueError('Article selection lacks caller evidence')

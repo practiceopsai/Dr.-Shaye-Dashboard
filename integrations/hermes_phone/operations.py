@@ -66,7 +66,7 @@ def send_email(args, settings, *, home=None, session=None, invoke=None, services
         or not 1<=len(subject)<=150 or '\x00' in body or re.search(PATIENT+'|MEDIA:',body+subject,re.I)
         or not 8<=len(quote)<=6000 or normalize(quote) not in normalize(fresh)
         or (not derived and not re.search(r'(?<!\w)'+re.escape(normalize(body))+r'(?!\w)',normalize(quote)))
-        or not re.search(r'\b(?:e-?mail)\b',quote,re.I)
+        or (not derived and not re.search(r'\b(?:e-?mail)\b',quote,re.I))
         or not (named or to.casefold() in quote.casefold())
         or re.search(r"\b(?:do not|don't|dont|never)\s+(?:send|email)|\bcancel\b",fresh,re.I)
         or (subject != 'Message from Eli' and normalize(subject) not in normalize(quote))):

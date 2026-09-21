@@ -134,6 +134,17 @@ def test_article_cannot_infer_imessage_from_the_word_send(configured):
     assert phone.store().claim() is None
 
 
+@pytest.mark.parametrize('prompt,ready',[('Send the article by email, correct?',True),('Email or WhatsApp for the article?',False)])
+def test_article_channel_confirmation_is_bound_and_unambiguous(configured,prompt,ready):
+    from app.phone_intake import prepare_task
+    quote='Send Owner an AI article.\nYes, correct'
+    history=[{'question_id':'article-question','spoken_prompt':prompt,'answer':'Yes, correct'}]
+    prepared,question=prepare_task(task('article',quote,details={'query':'AI','channel':'email'},clarification_history=history),phone.callers())
+    assert bool(prepared)==ready
+    if ready:assert prepared['article']['confirmed_proposals']==history
+    else:assert 'email, WhatsApp, or iMessage' in question
+
+
 def test_confirmed_spoken_proposal_is_bound_to_answered_task(configured):
     call,initial=intake(configured,'Send Owner an invitation')
     identifier=dispatch.commit_plan(initial,plan(task('calendar','Send Owner an invitation',question='Title and duration?')))[0]

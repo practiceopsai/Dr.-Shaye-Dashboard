@@ -53,7 +53,9 @@ def prepare_task(task,contacts):
     if kind=='article':
         channel=details.get('channel')
         if channel not in CHANNELS:return {},'Should I send the article by email, WhatsApp, or iMessage?'
-        channel_evidence=source+'\n'+'\n'.join(h['spoken_prompt'] for h in approved_proposals(task.get('clarification_history',[])))
+        confirmations=[h for h in approved_proposals(task.get('clarification_history',[]))
+            if {name for name,pattern in CHANNELS.items() if re.search(pattern,h['spoken_prompt'],re.I)}=={channel}]
+        channel_evidence=source+'\n'+'\n'.join(h['spoken_prompt'] for h in confirmations)
         if not re.search(CHANNELS[channel],channel_evidence,re.I):
             return {},'Should I send the article by email, WhatsApp, or iMessage?'
         if not details.get('query'):return {},'What topic should the article cover?'
@@ -61,7 +63,7 @@ def prepare_task(task,contacts):
         if not recipient:return {},'What exact address or number should I use for '+mention+'?'
         if not re.search(r'\b(?:article|link)\b',source,re.I) or not re.search(r'\b(?:send|email|text|share)\b',source,re.I):
             return {},'Should I find the article only, or also send its link?'
-        return {'operation':'find_send_article','article':{**details,'recipient':recipient,'approval_quote':source},
+        return {'operation':'find_send_article','article':{**details,'recipient':recipient,'approval_quote':source,'confirmed_proposals':confirmations},
                 'required_receipts':[channel]},''
     organizer=details.get('organizer')
     missing=[name for name in ['title','date','time','timezone','duration_minutes'] if not details.get(name)]
