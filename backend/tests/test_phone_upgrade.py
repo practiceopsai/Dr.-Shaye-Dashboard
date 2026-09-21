@@ -114,3 +114,28 @@ def test_routine_success_stays_silent_even_before_topic_pivot():
     assert presence.relevant_notice(n,'call','Any updates?')
     n['state']='uncertain'
     assert presence.relevant_notice(n,'call','Send Fabio the email.')
+
+
+def test_rapid_stacked_requests_get_distinct_durable_origins(configured):
+    cfg,_=configured;call=live.activate_stream(authenticated_stream(configured),cfg)
+    c=live.Conversation();c.append(fragment('first','Send Fabio hello.',1000))
+    text,ids,caller=c.request(2000)
+    one=live.enqueue(call,'a',text,caller,origin_turn_id=c.turn_id)
+    c.consume(ids)
+    c.append(fragment('second','Also check my calendar.',2100))
+    text,ids,caller=c.request(3000)
+    two=live.enqueue(call,'b',text,caller,origin_turn_id=c.turn_id)
+    assert one!=two and len(phone.store().jobs(call['actor']))==2
+    assert phone.store().jobs(call['actor'])[0]['transcript']=='Also check my calendar.'
+
+
+def test_exact_media_echo_is_diagnosed_without_dropping_legitimate_repeated_words(configured):
+    from app.phone_runtime import Runtime
+    rt=Runtime('echo-call',phone.store())
+    audio=bytes(range(160));rt.observe_output(audio)
+    assert rt.observe_input(audio)
+    assert not rt.observe_input(bytes(reversed(range(160))))
+    assert not rt.observe_input(b'\xff'*160)
+    assert any(e[2]=='audio.echo_suspected' for e in rt.events)
+    assert rt.audio_allowed({'event_id':'once'},True,20,False)
+    assert not rt.audio_allowed({'event_id':'once'},True,20,False)

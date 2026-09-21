@@ -66,6 +66,11 @@ class OperationsTests(unittest.TestCase):
         self.assertTrue(second['already_attempted_for_this_request'])
         self.assertEqual([c.args[0] for c in self.invoke.call_args_list],['email_send','email_registry','email_registry'])
 
+    def test_status_question_is_not_a_fresh_send_instruction(self):
+        quote='Did you send Fabio an email saying hello?'
+        self.fresh(quote);self.args['approval_quote']=quote
+        self.assertFalse(self.send()['success']);self.invoke.assert_not_called()
+
     def test_cleanup_failure_retains_send_receipt_without_retry(self):
         self.mail.get_message.side_effect=TimeoutError()
         first=self.send();self.send()

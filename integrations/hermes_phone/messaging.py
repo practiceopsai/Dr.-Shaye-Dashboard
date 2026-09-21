@@ -11,6 +11,10 @@ def normalize(value):
     return ' '.join(str(value).casefold().split())
 
 
+def status_question(value):
+    return bool(re.match(r'\s*(?:(?:okay|so|and)[, ]+)?(?:did you|have you|had you|has (?:it|that)|was (?:it|that)|were you|what did you)\b',value,re.I))
+
+
 def send_whatsapp(args, settings, *, session=None, home=None, sender=None):
     return send_message(args, settings, channel='whatsapp', session=session, home=home, sender=sender)
 
@@ -74,7 +78,7 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
         transcript = job.get('transcript', '')
         fresh = transcript.rsplit('New caller speech: ', 1)[-1] if 'New caller speech: ' in transcript else transcript
         normalized = normalize(fresh)
-        if (normalize(quote) not in normalized
+        if (status_question(quote) or normalize(quote) not in normalized
                 or not re.search(r'(?<!\w)' + re.escape(normalize(message)) + r'(?!\w)', normalize(quote))
                 or (channel == 'whatsapp' and not re.search(r'\bwhats\s*app\b', quote, re.I))
                 or (channel == 'imessage' and (not re.search(r'\b(?:text|imessage)\b',quote,re.I)

@@ -209,6 +209,13 @@ class Conversation:
                 'New caller speech: ' + caller)
         return text, [f['id'] for f in fresh], caller
 
+    def consume(self, identifiers):
+        self.consumed.update(identifiers)
+        # Once a complete request is committed, subsequent caller speech is a
+        # new turn even without intervening assistant speech or a long pause.
+        # Otherwise rapid stacked tasks share an idempotency key and get lost.
+        if identifiers:self.new_turn=True
+
 
 def enqueue(call, delegation_id, transcript, caller_text, *, final=False, origin_turn_id='', origin_topic_id='', read_plan=None):
     """Atomic, actor-bound and idempotent. Native claim/recovery rules remain in force."""
@@ -360,6 +367,7 @@ class LiveCall:
                 if media.get('track') != 'inbound' or not isinstance(payload, str) or len(payload) > 32000:
                     raise ValueError('invalid_audio')
                 samples = base64.b64decode(payload, validate=True)
+                self.runtime.observe_input(samples)
                 # A delegation can precede the caller's final word. Use the input
                 # audio's quiet period as well as settled transcript delivery before
                 # committing a task. GPT-Live still controls conversational turn taking.
@@ -411,6 +419,7 @@ class LiveCall:
                 allowed=self.runtime.audio_allowed(event,voiced,len(samples)/8,time.monotonic()-self.last_speech<.35)
                 if self.unaccepted and voiced:allowed=False
                 if allowed:
+                    if voiced:self.runtime.observe_output(samples)
                     if voiced:
                         self.runtime.floor='eli'
                         if not self.runtime.first_audio:
@@ -486,14 +495,14 @@ class LiveCall:
                         await self.append('thinking', 'No complete request was captured yet. Keep listening; do not interrupt.', identifier)
                     return
                 if self.ignore_social(caller_text):
-                    self.conversation.consumed.update(consumed)
+                    self.conversation.consume(consumed)
                     await self.append('thinking','This was conversational acknowledgment or goodbye, not a new task. No new work was created.',identifier)
                     return
                 if presence.automated_audio(caller_text):
-                    self.conversation.consumed.update(consumed)
+                    self.conversation.consume(consumed)
                     return
                 if presence.known_question(caller_text):
-                    self.conversation.consumed.update(consumed)
+                    self.conversation.consume(consumed)
                     await self.append('thinking','No task was created. Answer this question directly from your supplied Eli context. '
                                       'If the team roster is partial, say which members you can verify; never invent the rest.',identifier)
                     return
@@ -502,7 +511,7 @@ class LiveCall:
                 if re.fullmatch(r'\s*(?:please\s+)?(?:cancel|stop|don.t send|do not send)\s+(?:that|that task|the last task)[.!?]*\s*',caller_text,re.I) and self.last_job:
                     outcome=phone.store().cancel(self.call['actor'],self.last_job)
                     self.runtime.event('task.cancel_requested',task_id=self.last_job,status=outcome['state'])
-                    self.conversation.consumed.update(consumed)
+                    self.conversation.consume(consumed)
                     await self.append('thinking','Verified cancellation state: '+json.dumps(outcome)+'. Never claim an in-flight effect was undone.',identifier)
                     return
                 origin=next((f.get('turn_id','') for f in self.conversation.fragments if f['id'] in consumed),'')
@@ -512,7 +521,7 @@ class LiveCall:
                 self.runtime.pending[job_id]=origin
                 self.runtime.event('task.persisted',task_id=job_id,status='foreground_read' if plan else 'background_action')
                 self.last_job = job_id
-                self.conversation.consumed.update(consumed)
+                self.conversation.consume(consumed)
                 if not plan:self.conversation.delegated.update(consumed)
                 self.unaccepted.discard(identifier)
             await self.acknowledge(identifier, job_id)
@@ -551,7 +560,7 @@ class LiveCall:
             return
         _,used,caller=self.conversation.request(float('inf'))
         if caller and not presence.work_requested(caller):
-            self.conversation.consumed.update(used)
+            self.conversation.consume(used)
 
     def voice_metric(self, job_id, status):
         if (job_id,status) in self.voice_metrics:

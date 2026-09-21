@@ -107,6 +107,11 @@ class ReadEffectTests(unittest.TestCase):
         self.assertTrue(effects.begin(self.perf,self.job,'COMPOSIO_MULTI_EXECUTE_TOOL',{'tools':[a,a]})['block'])
         self.assertEqual(effects.review(self.perf,self.job),[])
 
+    def test_changed_agent_tracking_note_cannot_repeat_same_email(self):
+        args={'to':['a@example.com'],'subject':'Hello','text':'Hello','mandate':'one'}
+        effects.begin(self.perf,self.job,'email_send',args)
+        self.assertTrue(effects.begin(self.perf,self.job,'email_send',{**args,'mandate':'two'})['block'])
+
     def test_provider_acceptance_reconciles_by_read_after_restart(self):
         args={'to':['test@example.com'],'subject':'Hello'}
         effects.begin(self.perf,self.job,'email_send',args)

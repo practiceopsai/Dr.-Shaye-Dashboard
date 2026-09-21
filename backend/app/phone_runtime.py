@@ -49,6 +49,7 @@ class Runtime:
         self.output_end=0.;self.played_end=0.;self.marks={};self.cancelled_spans=[]
         self.output_fence=False;self.output_silence_ms=0.;self.audio_spans=set()
         self.last_input_seq=0;self.last_generated='';self.last_played=''
+        self.audio_events=set();self.output_fingerprints={};self.last_echo=0.
 
     def event(self,kind,*,turn_id=None,task_id='',duration_ms=0,status='',response_id=None):
         self.sequence+=1
@@ -87,6 +88,12 @@ class Runtime:
         self.response_id=''
 
     def audio_allowed(self,event,voiced,duration_ms,user_speaking):
+        identifier=event.get('event_id')
+        if isinstance(identifier,str):
+            if identifier in self.audio_events:
+                self.event('audio.discarded',status='duplicate_event');return False
+            self.audio_events.add(identifier)
+            if len(self.audio_events)>65000:raise ValueError('audio_event_limit')
         start,end=event.get('start_ms'),event.get('end_ms')
         if isinstance(start,(int,float)) and isinstance(end,(int,float)):
             key=(start,end)
@@ -103,6 +110,23 @@ class Runtime:
             if self.output_silence_ms>=120:self.output_fence=False
             if voiced:return False
         return not user_speaking
+
+    def observe_output(self,samples):
+        # Short-lived nonreversible fingerprints diagnose exact media loopback.
+        # They are not acoustic echo cancellation and never erase user speech.
+        now=time.monotonic()
+        self.output_fingerprints={k:v for k,v in self.output_fingerprints.items() if now-v<3}
+        for start in range(0,len(samples)-159,160):
+            frame=samples[start:start+160]
+            if len(set(frame))>12:self.output_fingerprints[hashlib.sha256(frame).digest()]=now
+
+    def observe_input(self,samples):
+        now=time.monotonic()
+        matched=any(now-self.output_fingerprints.get(hashlib.sha256(samples[i:i+160]).digest(),-100)<3
+                    for i in range(0,len(samples)-159,160))
+        if matched and now-self.last_echo>1:
+            self.last_echo=now;self.event('audio.echo_suspected',status='exact_media_loopback')
+        return matched
 
     def mark(self,name):
         self.marks[name]=self.output_end

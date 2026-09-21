@@ -19,6 +19,8 @@ def mutation(tool,args):
 
 def identity(job,tool,args):
     clean={k:v for k,v in args.items() if k not in {'approval_quote','thought','current_step','current_step_metric','session_id'}}
+    if tool=='email_send':
+        clean={k:v for k,v in clean.items() if k not in {'mandate','success_condition','summary'}}
     if tool.upper().endswith('COMPOSIO_MULTI_EXECUTE_TOOL'):
         clean={'tools':[{k:v for k,v in x.items() if k in {'tool_slug','arguments','account'}} for x in args.get('tools',[])]}
     return hashlib.sha256((str(job.get('root_id') or job['id'])+'\0'+tool+'\0'+json.dumps(clean,sort_keys=True,default=str)).encode()).hexdigest()

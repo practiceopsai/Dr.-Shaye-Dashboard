@@ -4,7 +4,7 @@ import json
 import re
 import time
 from .performance import current
-from .messaging import normalize
+from .messaging import normalize, status_question
 
 PATIENT = r'\bmrn\b|medical record number|date of birth|\bdob\s*[:#]|patient\s+\w+\s+\w+|\bdiagnos(?:is|ed|es)\b|\bicd-?10\b|pathology report|lab result'
 
@@ -60,7 +60,7 @@ def send_email(args, settings, *, home=None, session=None, invoke=None, services
     names = [part for actor,item in settings.get('identities',{}).items() if actor.casefold()==to.casefold()
              for part in item.get('name','').split() if part.casefold() not in {'dr','dr.','doctor'}]
     named = any(re.search(r'\b'+re.escape(n)+r'\b',quote,re.I) for n in names)
-    if (not re.fullmatch(r'[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+',to) or not 1<=len(body)<=1800
+    if (status_question(quote) or not re.fullmatch(r'[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+',to) or not 1<=len(body)<=1800
         or not 1<=len(subject)<=150 or '\x00' in body or re.search(PATIENT+'|MEDIA:',body+subject,re.I)
         or not 8<=len(quote)<=6000 or normalize(quote) not in normalize(fresh)
         or not re.search(r'(?<!\w)'+re.escape(normalize(body))+r'(?!\w)',normalize(quote))
