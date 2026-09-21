@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import sys,types
 import unittest
 from unittest.mock import Mock
 
-spec=importlib.util.spec_from_file_location('phone_messaging',Path(__file__).with_name('messaging.py'))
+package=types.ModuleType('phone_messaging_tests');package.__path__=[str(Path(__file__).parent)];sys.modules[package.__name__]=package
+spec=importlib.util.spec_from_file_location('phone_messaging_tests.messaging',Path(__file__).with_name('messaging.py'))
 messaging=importlib.util.module_from_spec(spec);spec.loader.exec_module(messaging)
 
 

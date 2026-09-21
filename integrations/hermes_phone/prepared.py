@@ -6,6 +6,12 @@ from . import performance,operations,messaging
 
 def run(job,settings,perf,invoke=None):
     plan=json.loads(job.get('plan') or '{}') if isinstance(job.get('plan'),str) else job.get('plan',{})
+    if plan.get('operation')=='find_send_article':
+        from .articles import run as article
+        return article(job,settings,perf)
+    if plan.get('operation')=='calendar_invitation':
+        from .calendar_invites import run as calendar
+        return calendar(job,settings,perf)
     kind=plan.get('atomic_kind')
     if plan.get('operation')!='send_message' or kind not in {'email','imessage','whatsapp'}:
         raise ValueError('Unsupported prepared action')

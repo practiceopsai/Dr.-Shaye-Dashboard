@@ -518,7 +518,10 @@ def job_progress(job_id: str, update: JobProgress):
         for event in update.events:
             if contains_phi(event.content):
                 raise HTTPException(400, 'Progress must not contain patient information')
-            db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
+            db.execute('''INSERT INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(job_id,event_id) DO UPDATE SET status=excluded.status,content=excluded.content
+                WHERE phone_job_updates.kind='action' AND phone_job_updates.tool=excluded.tool
+                AND phone_job_updates.status='accepted' AND excluded.status IN ('sent','verified')''',
                        (job_id,event.event_id,event.kind,event.tool,event.status,event.duration_ms,event.content,time.time()))
     return {'status': 'recorded'}
 
@@ -545,6 +548,14 @@ def update_job(job_id: str, update: JobUpdate):
             raise HTTPException(409,'Work cannot start after cancellation or an uncertain execution')
         if update.state == 'completed' and not update.result.strip():
             raise HTTPException(400, 'An empty response is not completion')
+        plan=json.loads(row['plan'] or '{}')
+        required=plan.get('required_receipts') or ([plan.get('atomic_kind')] if plan.get('operation')=='send_message' else [])
+        if update.state=='completed' and required:
+            tools={r['tool'] for r in db.execute("SELECT tool FROM phone_job_updates WHERE job_id=? AND kind='action' AND status IN ('sent','verified')",(job_id,))}
+            accepted={'email':{'email_send','eli_phone_send_email'},'imessage':{'eli_phone_send_imessage'},
+                'whatsapp':{'eli_phone_send_whatsapp'},'calendar':{'eli_phone_calendar_invitation'}}
+            if any(not(tools & accepted.get(k,set())) for k in required):
+                raise HTTPException(409,'Verified action receipts must arrive before completion')
         if update.state == 'waiting_for_input' and not update.question.strip():
             raise HTTPException(400, 'A clarification question is required')
         db.execute('UPDATE phone_jobs SET state=?,result=?,error=?,question=?,updated=? WHERE id=?',
@@ -629,11 +640,12 @@ def answer_question(job_id: str, answer: ClarificationAnswer, user: AuthUser = D
     if contains_phi(answer.answer):
         raise HTTPException(400, 'Use a compliant workflow for patient information')
     with store().db() as db:
-        row=db.execute('SELECT call_id FROM phone_jobs WHERE id=? AND actor=?',(job_id,user.email)).fetchone()
+        row=db.execute('SELECT call_id,plan FROM phone_jobs WHERE id=? AND actor=?',(job_id,user.email)).fetchone()
     if not row:
         raise HTTPException(404)
     try:
-        identifier=store().resume(user.email,job_id,answer.answer,row['call_id'])
+        identifier=store().resume(user.email,job_id,answer.answer,row['call_id'],
+            replan=bool(json.loads(row['plan'] or '{}').get('atomic_kind')))
     except ValueError as exc:
         raise HTTPException(409,str(exc))
     return {'status':'resumed','job_id':identifier}

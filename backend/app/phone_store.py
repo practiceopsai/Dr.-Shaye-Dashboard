@@ -166,9 +166,15 @@ class PhoneStore:
 
     def questions(self, actor, call_id=None):
         with self.db() as db:
-            return [dict(r) for r in db.execute("""SELECT id,question,root_id,call_id FROM phone_jobs
+            rows=[dict(r) for r in db.execute("""SELECT id,question,root_id,call_id,plan,transcript FROM phone_jobs
                 WHERE actor=? AND state='waiting_for_input' AND (? IS NULL OR call_id=?)
                 ORDER BY created LIMIT 32""", (actor,call_id,call_id))]
+        for row in rows:
+            plan=json.loads(row.pop('plan') or '{}')
+            row.update(scope=plan.get('atomic_scope',''),kind=plan.get('atomic_kind',''),
+                       request=row.pop('transcript').rsplit('New caller speech: ',1)[-1],
+                       details=plan.get('details',{}))
+        return rows
 
     def notices(self, actor, call_id='', *, current_only=False):
         with self.db() as db:
@@ -185,15 +191,16 @@ class PhoneStore:
             db.execute('UPDATE phone_notices SET heard_at=?,heard_call=? WHERE job_id=? AND actor=? AND heard_at IS NULL',
                        (time.time(),call_id,job_id,actor))
 
-    def resume(self, actor, request_id, answer, call_id, *, source_job=None):
+    def resume(self, actor, request_id, answer, call_id, *, source_job=None, replan=False, connection=None):
         """Consume one answer atomically. A retry returns the same continuation.
 
         Operation receipts use root_id across continuations, so completing a
         missing detail never repeats an already-confirmed part of the task.
         """
         import secrets
-        with self.db() as db:
-            db.execute('BEGIN IMMEDIATE')
+        from contextlib import nullcontext
+        with (nullcontext(connection) if connection is not None else self.db()) as db:
+            if connection is None:db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(request_id,actor)).fetchone()
             if not row:
                 raise ValueError('Unknown clarification')
@@ -201,6 +208,7 @@ class PhoneStore:
                 return row['resume_job']
             if row['state'] != 'waiting_for_input':
                 raise ValueError('This task is not waiting for an answer')
+            if row['call_id']!=call_id:raise ValueError('Clarification belongs to a different call')
             original = row['transcript'].rsplit('New caller speech: ',1)[-1]
             if len(original)+len(answer)>6000:
                 raise ValueError('Please restate the complete request as a new task; this clarification history is too long')
@@ -211,9 +219,13 @@ class PhoneStore:
                           'The following combines the original caller words and their clarification verbatim.\n'
                           'New caller speech: '+original+'\n'+answer)
             identifier, now = secrets.token_hex(16), time.time()
+            created=now
+            if replan and source_job:
+                source=db.execute('SELECT created FROM phone_jobs WHERE id=?',(source_job,)).fetchone()
+                if source:created=source['created']+.000001  # Rebuild before the next caller fragment is planned.
             db.execute("""INSERT INTO phone_jobs(id,actor,call_id,transcript,created,updated,audio_state,root_id,parent_id,followup_allowed,callback_requested)
                 VALUES (?,?,?,?,?,?,'live',?,?,?,?)""",
-                (identifier,actor,call_id,transcript,now,now,row['root_id'] or row['id'],row['id'],0,row['callback_requested']))
+                (identifier,actor,call_id,transcript,created,now,row['root_id'] or row['id'],row['id'],0,row['callback_requested']))
             db.execute('INSERT INTO phone_live_delegations VALUES (?,?,?,?)',
                        (call_id,'continuation:'+identifier,identifier,original+'\n'+answer))
             auth=json.loads(row['authorization'] or '{}')
@@ -224,7 +236,13 @@ class PhoneStore:
                  'continuation:'+row['id'],json.dumps(auth),row['notify_policy'],identifier))
             db.execute('UPDATE phone_jobs SET batch_id=?,resource_key=?,depends_on=?,plan=? WHERE id=?',
                        (row['batch_id'],row['resource_key'],row['depends_on'],row['plan'],identifier))
-            if row['execution_class']=='intake':
+            if replan:
+                plan=json.loads(row['plan'] or '{}')
+                plan['continuation_replan']=True
+                plan['clarification_history']=plan.get('clarification_history',[])+[
+                    {'question_id':row['id'],'question':row['question'],'answer':answer,'source_job':source_job}]
+                db.execute('UPDATE phone_jobs SET plan=? WHERE id=?',(json.dumps(plan),identifier))
+            if replan or row['execution_class']=='intake':
                 db.execute("UPDATE phone_jobs SET state='planning',execution_class='intake' WHERE id=?",(identifier,))
             db.execute("UPDATE phone_jobs SET state='resumed',resume_job=?,updated=? WHERE id=?",(identifier,now,row['id']))
             db.execute('UPDATE phone_notices SET heard_at=COALESCE(heard_at,?),heard_call=COALESCE(heard_call,?) WHERE job_id=?',(now,call_id,row['id']))

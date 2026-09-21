@@ -68,6 +68,8 @@ def envelope(data):
     if isinstance(data.get('result'),(str,dict)):return envelope(data['result'])
     if data.get('content'):return envelope(next(x['text'] for x in data['content'] if x.get('type')=='text'))
     if isinstance(data.get('data'),dict):return envelope(data['data'])
+    for key in ('response_data','event_data','calendar_data'):
+        if isinstance(data.get(key),dict):return envelope(data[key])
     return data
 
 

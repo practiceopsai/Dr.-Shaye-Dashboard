@@ -26,6 +26,8 @@ def unwrap(value):
         rows=value['results']
         if len(rows)!=1:raise ValueError('Unexpected connector result count')
         value=unwrap(rows[0].get('response',rows[0]))
+    for key in ('response_data','event_data','calendar_data'):
+        if isinstance(value.get(key),dict):return {**{k:v for k,v in value.items() if k!=key},**unwrap(value[key])}
     return value
 
 

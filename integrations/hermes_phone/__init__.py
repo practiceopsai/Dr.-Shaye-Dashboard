@@ -274,10 +274,14 @@ class PhoneAdapter(BasePlatformAdapter):
             # current model routing, SOUL, persona/rank hooks, memory and tools.
             plan=json.loads(job.get('plan') or '{}') if isinstance(job.get('plan'),str) else job.get('plan',{})
             action_error=''
-            if plan.get('operation')=='send_message':
+            prepared_state=''
+            if plan.get('operation') in {'send_message','find_send_article','calendar_invitation'}:
                 data=await self.prepared_turn(event,job)
-                if data.get('success') and data.get('message_id'):
-                    answer='The '+plan['atomic_kind']+' message has '+('a verified send receipt.' if data.get('source_verified',True) else 'been accepted; source verification is pending.')
+                prepared_state=data.get('state','')
+                if data.get('success') and (data.get('message_id') or data.get('event_id')):
+                    answer='The requested '+plan['atomic_kind']+' has '+('a verified provider receipt.' if data.get('source_verified',True) else 'been accepted; source verification is pending.')
+                    if data.get('recipients'):answer+=' Recipients: '+', '.join(data['recipients'])+'.'
+                    if data.get('article'):answer+=' Article: '+data['article']['title']+'. Source: '+data['article']['source']+'.'
                 else:
                     action_error=data.get('error','The message was not sent. Review this task before trying again.')[:500]
                     answer=action_error
@@ -293,7 +297,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 await asyncio.to_thread(effects.reconcile,self.performance,job)
             answer=performance.verified_answer(self.performance,job,answer)
             question=question_for(self.performance,job['id'])
-            if not question and possible_question(answer):
+            if not question and not action_error and possible_question(answer):
                 question=save_question(self.performance,job['id'],answer)
             state='waiting_for_input' if question else 'completed'
             if not question and (action_error or performance.missing_send_receipt(self.performance,job)):
@@ -301,7 +305,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 action_error=action_error or 'No send receipt was produced for this message. It was not completed; review it before retrying.'
                 answer=action_error
             unresolved=any(r['state']!='verified' for r in effects.review(self.performance,job))
-            if unresolved and not question:state='uncertain'
+            if (unresolved or prepared_state=='uncertain') and not question:state='uncertain'
             if len(job.get('claim',''))>=20:
                 control=await asyncio.to_thread(api_control,job)
                 if control.get('cancel_requested'):

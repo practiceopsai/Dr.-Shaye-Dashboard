@@ -120,7 +120,7 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
     kind=atomic.get('atomic_kind')
     channels={'eli_phone_send_email':'email','email_send':'email',
               'eli_phone_send_imessage':'imessage','eli_phone_send_whatsapp':'whatsapp'}
-    if kind and tool_name in channels and kind not in {channels[tool_name],'global'}:
+    if kind and tool_name in channels and kind not in {channels[tool_name],'global','article','calendar'}:
         return {'block':True,'message':'That send belongs to a different job. Execute only this atomic task; sibling work has its own receipt.'}
     if kind in {'draft','read'} and (re.search(r'(?:^|_)(?:send|reply|publish|post)(?:_|$)',tool_name,re.I)
                                     or tool_name in {'eli_phone_request_callback','eli_phone_propose_call'}):
@@ -131,7 +131,7 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
         from . import api_control
         try:control=api_control(job)
         except Exception:
-            if effects.mutation(tool_name,args or {}) or tool_name.startswith('eli_phone_send_'):
+            if effects.mutation(tool_name,args or {}) or tool_name.startswith('eli_phone_send_') or tool_name=='eli_phone_calendar_invitation':
                 return {'block':True,'message':'Task control is unavailable; no new effect may start. Preserve existing receipts.'}
             control={}
         if control.get('cancel_requested') or control.get('state')=='cancelled':
@@ -183,6 +183,9 @@ def after_tool(settings, tool_name='', args=None, result=None, duration_ms=0, st
             receipt = hashlib.sha256(str(data['message_id']).encode()).hexdigest()
             with perf.db() as db:
                 exists = db.execute("SELECT 1 FROM execution_events WHERE job_id=? AND kind='action' AND fingerprint=?", (job['id'],receipt)).fetchone()
+                if exists and verified:
+                    db.execute("UPDATE execution_events SET status='sent',content=?,delivered=0 WHERE job_id=? AND kind='action' AND fingerprint=? AND status='accepted'",
+                        ('The requested '+channels[tool_name]+' message has a verified send receipt.',job['id'],receipt))
             if not exists:
                 perf.record(job['id'],'action',tool_name,'sent' if verified else 'accepted',content=
                     'The requested '+channels[tool_name]+(' message has a verified send receipt.' if verified else ' send was accepted; source verification is still required. Do not resend.'),fingerprint=receipt)
@@ -230,10 +233,15 @@ def missing_send_receipt(perf,job):
     plan=job.get('plan') or {}
     if isinstance(plan,str):plan=json.loads(plan)
     kind=plan.get('atomic_kind')
-    if kind not in {'email','imessage','whatsapp'}:return False
+    if kind not in {'email','imessage','whatsapp','calendar','article','global'}:return False
+    required=plan.get('required_receipts') or ([kind] if kind in {'email','imessage','whatsapp','calendar'} else [])
+    if not required and kind=='global' and re.search(r'\b(send|invite|schedule|book)\b',job.get('transcript','').rsplit('New caller speech: ',1)[-1],re.I):
+        required=['any_effect']
     with perf.db() as db:
-        receipts=db.execute("SELECT tool FROM execution_events WHERE job_id=? AND kind='action' AND status='sent'",(job['id'],)).fetchall()
-    return not any(r['tool'] in {'eli_phone_send_'+kind,'email_send' if kind=='email' else ''} for r in receipts)
+        receipts={r['tool'] for r in db.execute("SELECT tool FROM execution_events WHERE job_id=? AND kind='action' AND status IN ('sent','verified')",(job['id'],))}
+    accepted={'email':{'eli_phone_send_email','email_send'},'whatsapp':{'eli_phone_send_whatsapp'},
+        'imessage':{'eli_phone_send_imessage'},'calendar':{'eli_phone_calendar_invitation'},'any_effect':receipts}
+    return any(not (accepted.get(item,set()) & receipts) for item in required)
 
 
 def model_timing(settings, api_duration=0, failed=False, **kwargs):

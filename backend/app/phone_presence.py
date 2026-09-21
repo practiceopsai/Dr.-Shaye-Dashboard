@@ -30,6 +30,10 @@ def recall_question(text):
                 and not re.search(r'\b(?:send|email|text|schedule|cancel|repeat|redo)\b',text,re.I))
 
 
+def task_status_question(text):
+    return bool(re.search(r'\b(?:did (?:both |the |those |these )?tasks? (?:complete|finish)|(?:what|which) (?:did|have) you (?:actually )?(?:send|sent|complete)|(?:did|have) you (?:actually )?(?:send|sent)\b|(?:status|progress) (?:of|on) (?:the |those |these |both )?tasks?)',text,re.I)) and not re.search(r'\b(?:resend|retry|again|cancel|go ahead|(?:last|previous) call|(?:please|and|also|then)\s+(?:send|text|email|schedule)|send (?:it|that) now)\b',text,re.I)
+
+
 def prior_call(call):
     """Caller-scoped primary records. Never confuse this call with an earlier one."""
     if not call.get('id'):
@@ -64,6 +68,27 @@ def local_facts(call,cfg):
     return {k:v for k,v in context.items() if k not in {'phone_work','recent_phone_dialogue'}}
 
 
+def task_states(call):
+    """One current execution/clarification revision per logical task, with receipts."""
+    with phone.store().db() as db:
+        rows=db.execute("""SELECT * FROM phone_jobs WHERE actor=? AND call_id=?
+            AND (execution_class!='intake' OR (state='planning' AND parent_id IS NOT NULL))
+            AND state!='resumed' ORDER BY created DESC LIMIT 32""",(call['actor'],call['id'])).fetchall()
+        result={}
+        for row in rows:
+            plan=json.loads(row['plan'] or '{}');root=row['root_id'] or row['id']
+            if root in result or plan.get('atomic_kind')=='clarification':continue
+            receipts=[dict(r) for r in db.execute("""SELECT u.tool,u.status FROM phone_job_updates u JOIN phone_jobs j ON j.id=u.job_id
+                WHERE COALESCE(j.root_id,j.id)=? AND u.kind='action' AND u.status IN ('sent','verified')""",(root,))]
+            mutation=plan.get('atomic_kind') in {'email','whatsapp','imessage','calendar','article','global'}
+            result[root]={'task_id':root,'question_id':row['id'] if row['state']=='waiting_for_input' else None,
+                'scope':plan.get('atomic_scope',''),'state':row['state'],'details':plan.get('details',{}),
+                'question':row['question'] if row['state']=='waiting_for_input' else '',
+                'completion_allowed':row['state']=='completed' and (bool(receipts) or not mutation),
+                'receipts':receipts,'result':(row['error'] or row['result'])[:500] if row['state'] in {'completed','failed','uncertain'} else ''}
+        return result
+
+
 def work_requested(text):
     # Only a hangup safety net. The live model decides actual delegation intent.
     text = re.sub(r'\b(?:can|could|are) you (?:able to )?(?:send|call|text|email|check|schedule) (?:people|messages|emails|other people)\??', '', text, flags=re.I)
@@ -87,6 +112,7 @@ def context_for(call, cfg):
              'phone_policy': 'No access code. Work survives hangup. No callback unless explicitly requested. Text means iMessage; WhatsApp only when named.'}
     facts.update(clock_facts(cfg))
     facts['previous_call']=prior_call(call)
+    facts['known_contacts']=[{'name':c.get('name',''),'email':email,'phone':c.get('phone','')} for email,c in phone.callers().items()]
     with phone.store().db() as db:
         row = db.execute('SELECT * FROM phone_voice_context WHERE actor=?', (call.get('actor',''),)).fetchone()
         facts['phone_work']=[dict(r) for r in db.execute('''SELECT COALESCE(d.caller_text,j.transcript) request,j.state,

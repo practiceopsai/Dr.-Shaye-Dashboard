@@ -60,10 +60,12 @@ def send_email(args, settings, *, home=None, session=None, invoke=None, services
     names = [part for actor,item in settings.get('identities',{}).items() if actor.casefold()==to.casefold()
              for part in item.get('name','').split() if part.casefold() not in {'dr','dr.','doctor'}]
     named = any(re.search(r'\b'+re.escape(n)+r'\b',quote,re.I) for n in names)
+    from .articles import authorized
+    with perf.db() as db:derived=authorized(db,job,args,'email')
     if (status_question(quote) or not re.fullmatch(r'[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+',to) or not 1<=len(body)<=1800
         or not 1<=len(subject)<=150 or '\x00' in body or re.search(PATIENT+'|MEDIA:',body+subject,re.I)
         or not 8<=len(quote)<=6000 or normalize(quote) not in normalize(fresh)
-        or not re.search(r'(?<!\w)'+re.escape(normalize(body))+r'(?!\w)',normalize(quote))
+        or (not derived and not re.search(r'(?<!\w)'+re.escape(normalize(body))+r'(?!\w)',normalize(quote)))
         or not re.search(r'\b(?:e-?mail)\b',quote,re.I)
         or not (named or to.casefold() in quote.casefold())
         or re.search(r"\b(?:do not|don't|dont|never)\s+(?:send|email)|\bcancel\b",fresh,re.I)
