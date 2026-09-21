@@ -532,6 +532,7 @@ class LiveCall:
                     return
                 if presence.task_status_question(caller_text) and (states:=await asyncio.to_thread(presence.task_states,self.call)):
                     self.conversation.consume(consumed)
+                    await asyncio.to_thread(task_intent.release,phone.store(),self.call['actor'],self.call['id'])
                     await self.append('thinking','Current task status from the execution ledger; answer this question now using these states. '
                         'Only completion_allowed=true is confirmed complete. Do not start another lookup. '+json.dumps(states,ensure_ascii=False),provider_id)
                     return

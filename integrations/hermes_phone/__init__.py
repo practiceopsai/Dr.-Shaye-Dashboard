@@ -194,6 +194,16 @@ class PhoneAdapter(BasePlatformAdapter):
                     {'claim':job['claim'],'state':state,'result':result,'error':error,
                      'question':question_for(self.performance,identifier) if state=='waiting_for_input' else ''})
                 self.journal.update(identifier,'delivered',result,error)
+            except urllib.error.HTTPError as exc:
+                if exc.code==409:
+                    control=await asyncio.to_thread(api_control,job)
+                    if control.get('superseded') or control.get('state') in {'resumed','cancelled'}:
+                        # Its receipts were flushed above. A superseded final
+                        # status cannot overwrite the new task version or block
+                        # unrelated completed jobs behind it in the outbox.
+                        self.journal.update(identifier,'delivered',result,error)
+                        continue
+                break
             except Exception:
                 # Delivery retries only replay a stored receipt, never agent work.
                 break
