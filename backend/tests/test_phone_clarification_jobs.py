@@ -32,7 +32,7 @@ def test_two_open_tasks_keep_answers_roots_and_payloads_separate(configured):
     calendar,article=dispatch.commit_plan(initial,plan(
         task('calendar',quote,question='What date, duration, timezone and hosting account?'),
         task('article',quote,question='Which channel?')))
-    continuation=answer(call,calendar,"Tomorrow, one hour, Pacific, title AI Test Meeting, from Eli's email.")
+    continuation=answer(call,calendar,"Tomorrow, one hour, Pacific, title AI Test Meeting, from Eli's email. Go ahead and send it.")
     state=presence.task_states(call)[calendar]
     assert state['state']=='planning' and state['question_id'] is None and not state['completion_allowed']
     speech=continuation['transcript'].rsplit('New caller speech: ',1)[-1]

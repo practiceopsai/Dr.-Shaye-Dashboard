@@ -121,6 +121,7 @@ class PhoneAdapter(BasePlatformAdapter):
         self.presence_task=None
         self.read_task=None
         self.reconcile_task=None
+        self.text_task=None
         self.running={}
 
     async def connect(self, *, is_reconnect=False):
@@ -133,10 +134,15 @@ class PhoneAdapter(BasePlatformAdapter):
         self.presence_task=asyncio.create_task(presence.sync(self,api_request,configuration))
         self.read_task=asyncio.create_task(self.poll_reads())
         self.reconcile_task=asyncio.create_task(self.poll_reconciliation())
+        from .cross_channel import pump
+        self.text_task=asyncio.create_task(pump(self,api_request))
         return True
 
     async def disconnect(self):
         self._running=False
+        if self.text_task:
+            self.text_task.cancel()
+            await asyncio.gather(self.text_task,return_exceptions=True)
         if self.reconcile_task:
             self.reconcile_task.cancel()
             await asyncio.gather(self.reconcile_task,return_exceptions=True)
@@ -239,6 +245,16 @@ class PhoneAdapter(BasePlatformAdapter):
     async def prepared_turn(self,event,job):
         return await asyncio.to_thread(prepared.execute,job,configuration(),self.performance)
 
+    @user_turn
+    async def workflow_turn(self,event,job):
+        from . import workflow
+        from gateway.session_context import set_session_vars,clear_session_vars
+        identity=job['identity']
+        tokens=set_session_vars(platform='eli_phone',chat_type='dm',chat_id=event.source.chat_id,
+            user_id=identity['user_id'],user_name=identity['name'],message_id=job['id'],session_id='workflow-'+job['id'])
+        try:return await workflow.execute(job,configuration(),self.performance,lambda:self.agent_turn(event))
+        finally:clear_session_vars(tokens)
+
     async def process(self,job):
         began=time.monotonic()
         try:
@@ -265,6 +281,8 @@ class PhoneAdapter(BasePlatformAdapter):
                         return
                 raise
             self.journal.update(job['id'],'running')
+            from . import ledger
+            await ledger.ready(job)
             self.performance.record(job['id'],'timing',status='native_started')
             source=self.build_source(chat_id=chat_id,chat_name='Eli phone',chat_type='dm',
                 user_id=user_id,user_name=identity['name'],message_id=job['id'])
@@ -275,7 +293,13 @@ class PhoneAdapter(BasePlatformAdapter):
             plan=json.loads(job.get('plan') or '{}') if isinstance(job.get('plan'),str) else job.get('plan',{})
             action_error=''
             prepared_state=''
-            if plan.get('operation') in {'send_message','find_send_article','calendar_invitation'}:
+            if plan.get('operation')=='workflow_step':
+                data=await self.workflow_turn(event,job)
+                answer=data.get('result') or data.get('question') or data.get('error') or ''
+                if not data.get('success') and not data.get('waiting_for_input'):
+                    action_error=data.get('error','The workflow step did not complete; review its saved result.')
+                prepared_state=data.get('state','')
+            elif plan.get('operation') in {'send_message','find_send_article','calendar_invitation'}:
                 data=await self.prepared_turn(event,job)
                 prepared_state=data.get('state','')
                 if data.get('success') and (data.get('message_id') or data.get('event_id')):
@@ -297,7 +321,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 await asyncio.to_thread(effects.reconcile,self.performance,job)
             answer=performance.verified_answer(self.performance,job,answer)
             question=question_for(self.performance,job['id'])
-            if not question and not action_error and possible_question(answer):
+            if not question and not action_error and plan.get('operation')!='workflow_step' and possible_question(answer):
                 question=save_question(self.performance,job['id'],answer)
             state='waiting_for_input' if question else 'completed'
             if not question and (action_error or performance.missing_send_receipt(self.performance,job)):
@@ -377,6 +401,8 @@ def register(ctx):
         ctx.register_tool(name=schema['name'],toolset='eli_phone',schema=schema,
             handler=lambda args,_fn=handler,**kwargs:json.dumps(_fn(args,configuration())))
     ctx.register_hook('pre_llm_call',lambda **kw:performance.context(configuration(),schemas,**kw))
+    from .cross_channel import hook
+    ctx.register_hook('pre_gateway_dispatch',lambda **kw:hook(configuration(),**kw))
     ctx.register_hook('pre_tool_call',lambda **kw:performance.before_tool(configuration(),**kw))
     ctx.register_hook('post_tool_call',lambda **kw:performance.after_tool(configuration(),**kw))
     ctx.register_hook('post_api_request',lambda **kw:performance.model_timing(configuration(),**kw))

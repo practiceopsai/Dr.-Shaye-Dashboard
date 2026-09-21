@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .phone_store import PhoneStore
+from . import task_ledger as ledger
 from .phone_trial import webhook_url, validate_request as validate_trial_request
 from .security import AuthUser, contains_phi, payload_hash, require_auth
 
@@ -482,7 +483,8 @@ def claim_job(options: ClaimOptions = ClaimOptions()):
                 WHERE j.actor=? AND u.tool='voice_delivery' AND u.created>? GROUP BY u.status""",(job['actor'],time.time()-7*86400))]
             job['dependency_results']=[dict(r) for r in db.execute('''SELECT p.id,p.result FROM json_each(?) dep
                 JOIN phone_jobs p ON COALESCE(p.root_id,p.id)=dep.value
-                WHERE p.actor=? AND p.state='completed' ''',(job.get('depends_on','[]'),job['actor']))]
+                WHERE p.actor=? AND p.state='completed'
+                AND NOT EXISTS (SELECT 1 FROM phone_task_meta m WHERE m.id=dep.value AND m.current_job!=p.id)''',(job.get('depends_on','[]'),job['actor']))]
     return {'job': job}
 
 
@@ -560,6 +562,9 @@ def update_job(job_id: str, update: JobUpdate):
             raise HTTPException(400, 'A clarification question is required')
         db.execute('UPDATE phone_jobs SET state=?,result=?,error=?,question=?,updated=? WHERE id=?',
                    (update.state, update.result, update.error, update.question, time.time(), job_id))
+        root=ledger.track(db,job_id)
+        ledger.event(db,root,'needs_input' if update.state=='waiting_for_input' else update.state,
+                     {'job_id':job_id,'error':update.error})
         db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
                    (job_id,update.state,'timing','',update.state,int((time.time()-row['created'])*1000),'',time.time()))
         if update.state != 'running':
@@ -574,8 +579,121 @@ def update_job(job_id: str, update: JobUpdate):
 def task_control(job_id: str, claim: str = Header(alias='X-Phone-Claim')):
     with store().db() as db:
         row=db.execute('SELECT state,claim,cancel_requested FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
-    if not row or not hmac.compare_digest(row['claim'] or '',claim):raise HTTPException(403)
-    return {'state':row['state'],'cancel_requested':bool(row['cancel_requested'])}
+        if not row or not hmac.compare_digest(row['claim'] or '',claim):raise HTTPException(403)
+        return ledger.control(db,job_id)
+
+
+class TaskEffect(BaseModel):
+    claim: str = Field(min_length=20,max_length=100)
+    version: int = Field(ge=1)
+    key: str = Field(min_length=1,max_length=200)
+    state: str = Field(default='reserved',pattern='^(reserved|committed|verified|rejected|uncertain)$')
+    receipt: dict = Field(default_factory=dict)
+
+
+@router.post('/internal/phone/jobs/{job_id}/effect',dependencies=[Depends(bridge_auth)])
+def task_effect(job_id:str, request:TaskEffect):
+    with store().db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row=db.execute('SELECT * FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
+        if not row or not hmac.compare_digest(row['claim'] or '',request.claim):raise HTTPException(403)
+        try:
+            if request.state=='reserved':identifier=ledger.reserve_effect(db,job_id,request.version,request.key)
+            else:
+                identifier=hashlib.sha256(((row['root_id'] or job_id)+':'+request.key).encode()).hexdigest()
+                ledger.finish_effect(db,job_id,identifier,request.state,request.receipt)
+        except ValueError as exc:raise HTTPException(409,str(exc)) from None
+    return {'id':identifier,'state':request.state}
+
+
+class TaskUtterance(BaseModel):
+    actor: str = Field(max_length=320)
+    user_id: str = Field(max_length=200)
+    platform: str = Field(pattern='^(whatsapp|telegram|photon|bluebubbles|app)$')
+    conversation_id: str = Field(min_length=1,max_length=300)
+    message_id: str = Field(min_length=1,max_length=300)
+    text: str = Field(min_length=1,max_length=6000)
+
+
+@router.post('/internal/tasks/utterance',dependencies=[Depends(bridge_auth)])
+def task_utterance(request:TaskUtterance):
+    entry=callers().get(request.actor)
+    if not entry or entry['user_id']!=request.user_id:raise HTTPException(403)
+    if contains_phi(request.text):raise HTTPException(400,'Use the compliant workflow for patient information')
+    call_id='text:'+hashlib.sha256((request.actor+':'+request.platform+':'+request.conversation_id).encode()).hexdigest()[:40]
+    with store().db() as db:
+        db.execute('''INSERT INTO phone_calls(id,actor,phone,authenticated,nonce,created) VALUES (?,?,?,1,'text',?)
+            ON CONFLICT(id) DO UPDATE SET created=excluded.created''',(call_id,request.actor,entry['phone'],time.time()))
+    from .phone_live import enqueue
+    from .task_intent import control_hint,hold
+    if control_hint(request.text):hold(store(),request.actor,call_id)
+    identifier=enqueue({'id':call_id,'actor':request.actor},request.message_id,
+        'Authenticated '+request.platform+' direct message.\nNew caller speech: '+request.text,request.text,intake=True)
+    return {'intake_id':identifier,'state':'planning','call_id':call_id}
+
+
+class TaskActor(BaseModel):
+    actor: str = Field(max_length=320)
+
+
+@router.post('/internal/tasks/capabilities',dependencies=[Depends(bridge_auth)])
+def task_capabilities():
+    return {'ledger_version':1,'text_ingress':True}
+
+
+@router.post('/internal/tasks/state',dependencies=[Depends(bridge_auth)])
+def bridge_task_state(request:TaskActor):
+    if request.actor not in callers():raise HTTPException(403)
+    with store().db() as db:tasks=ledger.snapshot(db,request.actor)
+    return {'tasks':tasks,'questions':store().questions(request.actor)}
+
+
+@router.get('/api/tasks')
+def task_state(user:AuthUser=Depends(require_auth)):
+    with store().db() as db:return {'tasks':ledger.snapshot(db,user.email)}
+
+
+class TaskNoticeRequest(TaskActor):
+    intake_id: str = Field(min_length=1,max_length=100)
+
+
+@router.post('/internal/tasks/notices',dependencies=[Depends(bridge_auth)])
+def task_notices(request:TaskNoticeRequest):
+    if request.actor not in callers():raise HTTPException(403)
+    with store().db() as db:
+        intake=db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(request.intake_id,request.actor)).fetchone()
+        if not intake:raise HTTPException(404)
+        tasks=[dict(r) for r in db.execute('SELECT * FROM phone_jobs WHERE actor=? AND batch_id=?',(request.actor,request.intake_id))]
+        notes=[]
+        for row in [dict(intake)]+tasks:
+            if row['state'] in {'resumed','expanded'}:continue
+            if row['state']=='waiting_for_input':content=row['question']
+            elif row['state'] in {'failed','uncertain'}:content=row['error'] or 'That task did not complete. Review its saved outcome before retrying.'
+            elif row['state']=='cancelled':content='That task was cancelled before further execution.'
+            elif row['state']=='completed':
+                if row['execution_class']=='intake':
+                    notice=db.execute('SELECT content FROM phone_notices WHERE job_id=?',(row['id'],)).fetchone()
+                    content=notice['content'] if notice else ''
+                    if content.startswith('Authoritative task changes: '):
+                        try:
+                            changes=json.JSONDecoder().raw_decode(content.split(': ',1)[1])[0]
+                            content='\n'.join(c.get('error') or {'cancelled':'Cancelled.', 'modified':'Updated the existing task.',
+                                'pending':'The task is pending.','running':'The task is running; its latest instruction is saved.',
+                                'completed':'The task is already complete.'}.get(c['state'],'Task state: '+c['state']) for c in changes)
+                        except (ValueError,KeyError):content='The task change is recorded in your task history.'
+                    elif content.startswith('Routing clarification only;'):
+                        content=content.split('Ask at the natural break: ',1)[-1]
+                    elif content.startswith('No external lookup'):
+                        content='That did not create or repeat a task. Please restate it if you intended a new action.'
+                else:
+                    plan=json.loads(row['plan'] or '{}')
+                    if plan.get('operation')=='workflow_step':continue
+                    task=ledger.get(db,request.actor,row['root_id'] or row['id'])
+                    content=row['result'] if task['completion_allowed'] else 'This task has no verified completion yet.'
+            else:continue
+            if content:notes.append({'id':row['id'],'state':row['state'],'content':content[:2000]})
+        settled=intake['state'] not in {'planning','waiting_for_input'} and all(r['state'] in {'completed','failed','uncertain','cancelled','resumed'} for r in tasks)
+    return {'notices':notes,'settled':settled}
 
 
 @router.post('/api/phone/jobs/{job_id}/cancel')

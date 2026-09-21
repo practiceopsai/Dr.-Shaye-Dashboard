@@ -102,7 +102,7 @@ def simple_app_draft(job):
     if isinstance(plan,str):plan=json.loads(plan)
     fresh=job.get('transcript','').rsplit('New caller speech: ',1)[-1]
     # Referenced records or an explicit external destination still need tools.
-    return plan.get('atomic_kind')=='draft' and not re.search(
+    return plan.get('operation')!='workflow_step' and plan.get('atomic_kind')=='draft' and not re.search(
         r'\b(?:based on|using|from|reply|respond|latest|recent|last|attached|attachment|file|folder|document|'
         r'gmail|outlook|drive|docs|notion|vault|dropbox|save (?:it |this )?(?:in|to|under))\b',fresh,re.I)
 
@@ -118,9 +118,13 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
     if isinstance(atomic,str):
         atomic=json.loads(atomic)
     kind=atomic.get('atomic_kind')
+    if atomic.get('operation')=='workflow_step':
+        from .workflow import guard
+        blocked=guard(job,tool_name,args or {},perf)
+        if blocked:return blocked
     channels={'eli_phone_send_email':'email','email_send':'email',
               'eli_phone_send_imessage':'imessage','eli_phone_send_whatsapp':'whatsapp'}
-    if kind and tool_name in channels and kind not in {channels[tool_name],'global','article','calendar'}:
+    if kind and tool_name in channels and kind not in {channels[tool_name],'global','article','calendar','deliver'}:
         return {'block':True,'message':'That send belongs to a different job. Execute only this atomic task; sibling work has its own receipt.'}
     if kind in {'draft','read'} and (re.search(r'(?:^|_)(?:send|reply|publish|post)(?:_|$)',tool_name,re.I)
                                     or tool_name in {'eli_phone_request_callback','eli_phone_propose_call'}):
@@ -134,9 +138,15 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
             if effects.mutation(tool_name,args or {}) or tool_name.startswith('eli_phone_send_') or tool_name=='eli_phone_calendar_invitation':
                 return {'block':True,'message':'Task control is unavailable; no new effect may start. Preserve existing receipts.'}
             control={}
-        if control.get('cancel_requested') or control.get('state')=='cancelled':
+        if control.get('held'):
+            from . import ledger
+            try:control=ledger.wait_ready(job)
+            except Exception:
+                return {'block':True,'message':'The task is paused for an unresolved correction. No effect was started. Ask the caller to resolve the saved clarification; do not claim completion.'}
+        if (control.get('cancel_requested') or control.get('state')=='cancelled' or control.get('superseded')
+                or control.get('held') or (job.get('ledger_version') and control.get('version')!=job['ledger_version'])):
             perf.record(job['id'],'timing','cancellation','cancel_requested')
-            return {'block':True,'message':'The caller cancelled this task. Stop starting tools. Already accepted effects may have completed; report their existing receipts honestly.'}
+            return {'block':True,'message':'The caller changed or cancelled this execution. Stop starting tools. Already accepted effects may have completed; report their existing receipts honestly.'}
     from .clarification import question_for
     if question_for(perf,job['id']) and tool_name not in {'eli_phone_clarify','eli_context'}:
         return {'block':True,'message':'This task is waiting for the caller answer. Return the saved question now; do not execute more work.'}
@@ -205,7 +215,8 @@ def context(settings, schemas, **kwargs):
         'No external mailbox, file, vault write, storage destination or discovery tool is needed. '
         'For a generic checklist, provide a clearly labeled general checklist; optional personalization is not a blocker. '
         'Do not invent specific trip details. Ask only for information essential to correctness.\n') if simple_app_draft(job) else ''
-    return {'context': draft_context+'Prepared phone operations: call tool_call(name, arguments) directly using these schemas; no tool_describe or skill catalog is needed for them. '
+    from .workflow import context as workflow_context
+    return {'context': workflow_context(job)+draft_context+'Prepared phone operations: call tool_call(name, arguments) directly using these schemas; no tool_describe or skill catalog is needed for them. '
         'For latest email, identify the inbox: eli_phone_latest_email reads only Eli AgentMail. My email refers to the authenticated caller, not Eli; use existing personal/practice account routing or clarify. '
         'For a new simple email send, prefer eli_phone_send_email. Unqualified text means iMessage; WhatsApp requires the caller to name WhatsApp explicitly. '
         'Missing essential details require eli_phone_clarify(question) before ending this turn. Do not just put a question in a completed response. '
@@ -233,7 +244,7 @@ def missing_send_receipt(perf,job):
     plan=job.get('plan') or {}
     if isinstance(plan,str):plan=json.loads(plan)
     kind=plan.get('atomic_kind')
-    if kind not in {'email','imessage','whatsapp','calendar','article','global'}:return False
+    if kind not in {'email','imessage','whatsapp','calendar','article','global','deliver'}:return False
     required=plan.get('required_receipts') or ([kind] if kind in {'email','imessage','whatsapp','calendar'} else [])
     if not required and kind=='global' and re.search(r'\b(send|invite|schedule|book)\b',job.get('transcript','').rsplit('New caller speech: ',1)[-1],re.I):
         required=['any_effect']
@@ -252,6 +263,11 @@ def model_timing(settings, api_duration=0, failed=False, **kwargs):
 
 
 def verified_answer(perf, job, answer):
+    plan=job.get('plan') or {}
+    if isinstance(plan,str):plan=json.loads(plan)
+    # Structured step outputs are validated by the workflow runner. Editing a
+    # manifest as though it were spoken completion can corrupt the next step.
+    if plan.get('operation')=='workflow_step':return answer
     from .effects import review
     effects=review(perf,job)
     pending=[r for r in effects if r['state']!='verified']

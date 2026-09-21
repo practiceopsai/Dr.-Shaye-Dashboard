@@ -57,13 +57,18 @@ class Runtime:
         self.events.append((self.call_id,self.sequence,kind,turn_id or self.turn_id,self.topic_id,
                             self.response_id if response_id is None else response_id,task_id,
                             int((time.monotonic()-self.began)*1000),max(0,int(duration_ms)),status[:60],time.time()))
-        if len(self.events)>2000:self.flush()
+        # The audio path only appends. Persistence runs in the maintenance lane.
+        if len(self.events)>20000:self.events=self.events[-20000:]
 
     def flush(self):
         if not self.events:return
-        with self.store.db() as db:
-            db.executemany('INSERT OR IGNORE INTO phone_trace VALUES (?,?,?,?,?,?,?,?,?,?,?)',self.events)
-        self.events.clear()
+        batch,self.events=self.events,[]
+        try:
+            with self.store.db() as db:
+                db.executemany('INSERT OR IGNORE INTO phone_trace VALUES (?,?,?,?,?,?,?,?,?,?,?)',batch)
+        except Exception:
+            self.events=batch+self.events
+            raise
 
     def user_turn(self,identifier,text):
         if identifier==self.turn_id:return
