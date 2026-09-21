@@ -78,11 +78,18 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
         transcript = job.get('transcript', '')
         fresh = transcript.rsplit('New caller speech: ', 1)[-1] if 'New caller speech: ' in transcript else transcript
         normalized = normalize(fresh)
+        plan=job.get('plan') or {}
+        if isinstance(plan,str):plan=json.loads(plan)
+        prepared=plan.get('message',{})
+        # A compound instruction can mention the sibling email channel. Only the
+        # exact, already resolved iMessage job may retain that shared evidence.
+        typed_imessage=(plan.get('operation')=='send_message' and plan.get('atomic_kind')=='imessage'
+            and all(args.get(k)==prepared.get(k) for k in ('recipient','message','approval_quote')))
         if (status_question(quote) or normalize(quote) not in normalized
                 or not re.search(r'(?<!\w)' + re.escape(normalize(message)) + r'(?!\w)', normalize(quote))
                 or (channel == 'whatsapp' and not re.search(r'\bwhats\s*app\b', quote, re.I))
                 or (channel == 'imessage' and (not re.search(r'\b(?:text|imessage)\b',quote,re.I)
-                    or re.search(r'\b(?:whats\s*app|sms|email)\b',quote,re.I)))
+                    or (not typed_imessage and re.search(r'\b(?:whats\s*app|sms|email)\b',quote,re.I))))
                 or not re.search(r'\b(send|text|message|tell)\b', quote, re.I)
                 or re.search(r"\b(?:do not|don't|dont|never)\s+(?:send|text|message)|\bcancel\b", fresh, re.I)):
             return {'success': False, 'error': 'The current caller must explicitly request this exact message. Earlier assistant speech is not approval.'}

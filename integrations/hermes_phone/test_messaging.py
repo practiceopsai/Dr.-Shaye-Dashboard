@@ -59,6 +59,19 @@ class PhoneMessagingTests(unittest.TestCase):
         self.add_job('request-one',self.quote)
         self.assertFalse(self.send()['success']);self.sender.assert_not_called()
 
+    def test_prepared_compound_text_checks_connection_without_channel_confusion(self):
+        quote="Text Fabio that I'm running late and email him the same thing"
+        self.args.update(message="I'm running late",approval_quote=quote)
+        plan={'operation':'send_message','atomic_kind':'imessage','message':dict(self.args)}
+        self.add_job('request-one',quote,plan=plan)
+        result=messaging.send_imessage(self.args,self.settings,
+            session=lambda k,d='':self.session.get(k,d),home=self.home,sender=self.sender,available=lambda _:False)
+        self.assertEqual(result['state'],'unavailable');self.sender.assert_not_called()
+        self.args['message']='email him the same thing'
+        changed=messaging.send_imessage(self.args,self.settings,
+            session=lambda k,d='':self.session.get(k,d),home=self.home,sender=self.sender,available=lambda _:True)
+        self.assertFalse(changed['success']);self.sender.assert_not_called()
+
     def test_patient_content_and_media_do_not_reach_transport(self):
         for body in ['patient Jane Doe diagnosis', 'MEDIA:/private/file.txt']:
             self.args['message']=body;self.args['approval_quote']='Send Fabio a WhatsApp message saying '+body
