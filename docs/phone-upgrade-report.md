@@ -115,9 +115,9 @@ Phase results below record changes without rewriting the historical diagnosis.
 | R.19 Make filler audio concurrent, cancellable and non-semantic | Conflicting / obsolete | Periodic narration conflicts with one acknowledgment then silence; use no routine progress timers. |
 | R.20 A practical tool execution pattern | Implemented but needs improvement | Prepared AgentMail reads take 186-405 ms, but are wrapped in general model rounds and actor queue. No synchronized Gmail/Calendar read model; account/PHI boundaries apply. |
 | R.21 Do not use “I’ll get back to you” as a normal tool strategy | Implemented but needs improvement | Prepared AgentMail reads take 186-405 ms, but are wrapped in general model rounds and actor queue. No synchronized Gmail/Calendar read model; account/PHI boundaries apply. |
-| R.22 Transport, turn-taking and barge-in | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
-| R.23 WebRTC should carry the interactive voice path | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
-| R.24 Phone calls need a telephony-specific path | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
+| R.22 Transport, turn-taking and barge-in | Implemented but needs improvement | Twilio/GPT-Live is already the telephony path; local energy-based clearing lacks adaptive backchannel discrimination. |
+| R.23 WebRTC should carry the interactive voice path | Missing | The installed iPhone application opens a PSTN call. It has no in-app microphone/WebRTC transport; adding one is a separate transport feature, not a prerequisite to repair phone calls. |
+| R.24 Phone calls need a telephony-specific path | Already implemented and working | Signed Twilio Media Streams use inbound PCMU 8 kHz and continuous PCMU output, with registered callers and telephony call lifecycle. |
 | R.25 Choose exactly one turn authority | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
 | R.26 Recommended LiveKit turn profile | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
 | R.27 Backchannels are not interruptions | Implemented but needs improvement | Provider is continuous GPT-Live with incremental fragments, no Realtime response IDs or transcript-done event. Existing event-ID dedup misses same timeline/text with new IDs. Local clear lacks general playback provenance; energy gate can clip output. |
@@ -125,7 +125,7 @@ Phase results below record changes without rewriting the historical diagnosis.
 | R.29 Bound the downstream audio queue | Implemented but needs improvement | Blueprint guidance compared with the actual GPT-Live/Twilio/native deployment; specific findings and limits are recorded in this report and the detailed rows below. |
 | R.30 Preempt intelligently | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
 | R.31 Native Realtime configuration | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
-| R.32 Cascaded versus native realtime | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
+| R.32 Cascaded versus native realtime | Already implemented and working | The production speaking lane uses native GPT-Live audio. A separate cascaded diagnostic oracle is absent; no evidence warrants replacing the engine. |
 | R.33 Repetition, audio cutoffs and output integrity | Implemented but needs improvement | Provider is continuous GPT-Live with incremental fragments, no Realtime response IDs or transcript-done event. Existing event-ID dedup misses same timeline/text with new IDs. Local clear lacks general playback provenance; energy gate can clip output. |
 | R.34 Diagnose repetition in the correct order | Implemented but needs improvement | Provider is continuous GPT-Live with incremental fragments, no Realtime response IDs or transcript-done event. Existing event-ID dedup misses same timeline/text with new IDs. Local clear lacks general playback provenance; energy gate can clip output. |
 | R.35 Add sequence numbers everywhere audio can be duplicated | Implemented but needs improvement | Provider is continuous GPT-Live with incremental fragments, no Realtime response IDs or transcript-done event. Existing event-ID dedup misses same timeline/text with new IDs. Local clear lacks general playback provenance; energy gate can clip output. |
@@ -133,7 +133,7 @@ Phase results below record changes without rewriting the historical diagnosis.
 | R.37 Do not “fix” exact duplication using temperature | Already implemented and working | No temperature change proposed. Model repetition cannot be inferred from aggregate task logs. |
 | R.38 Prevent response cutoffs caused by competing lifecycle events | Implemented but needs improvement | Provider is continuous GPT-Live with incremental fragments, no Realtime response IDs or transcript-done event. Existing event-ID dedup misses same timeline/text with new IDs. Local clear lacks general playback provenance; energy gate can clip output. |
 | R.39 Long-term memory, personality and user evolution | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
-| R.40 Do not build memory as “one vector database” | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
+| R.40 Do not build memory as “one vector database” | Already implemented and working | Production keeps canonical vault records, hybrid retrieval, SessionDB episodes, persona state and relational task receipts separate. |
 | R.41 Storage recommendation | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
 | R.42 Core memory schema | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
 | R.43 Make raw episodes immutable | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
@@ -142,17 +142,17 @@ Phase results below record changes without rewriting the historical diagnosis.
 | R.46 Never overwrite evolving facts | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
 | R.47 Retrieval should be hybrid and time-aware | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
 | R.48 Memory cards should carry provenance | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
-| R.49 Personality and authority are not ordinary memories | Implemented but needs improvement | Existing canonical Markdown memory + hybrid retrieval + SessionDB + persona learning/storage already provide provenance, confidence, supersession and rank boundaries. Compare temporal retrieval before any migration; no Postgres migration justified. |
+| R.49 Personality and authority are not ordinary memories | Already implemented and working | Installed persona policy/compiler and principal-session gates separate character, authority and private evidence from general recalled facts. |
 | R.50 Implementation blueprint, observability and acceptance gates | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
-| R.51 Recommended service decomposition | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
+| R.51 Recommended service decomposition | Already implemented and working | Railway LiveCall, native PhoneAdapter workers, task ledgers and existing persona/RAG services are already separated. |
 | R.52 Canonical event envelope | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
 | R.53 Persist a turn timing record | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
 | R.54 Production SLOs | Unable to verify | No pre-change turn-level/audio/network percentile evidence. Synthetic regression and live metadata can establish coverage; handset/carrier acceptance requires actual audio testing. |
 | R.55 Add transport metrics | Unable to verify | No pre-change turn-level/audio/network percentile evidence. Synthetic regression and live metadata can establish coverage; handset/carrier acceptance requires actual audio testing. |
 | R.56 Critical regression scenarios | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
 | R.57 Audio-specific chaos testing | Unable to verify | No pre-change turn-level/audio/network percentile evidence. Synthetic regression and live metadata can establish coverage; handset/carrier acceptance requires actual audio testing. |
-| R.58 Use the cascaded engine as a debugging oracle | Conflicting / obsolete | Installed path is Twilio Media Streams -> GPT-Live, not legacy Realtime/STT/TTS. No native in-app microphone path currently exists. Vendor-specific settings cannot be copied into Live. |
-| R.59 Recommended rollout sequence | Implemented but needs improvement | Provider is continuous GPT-Live with incremental fragments, no Realtime response IDs or transcript-done event. Existing event-ID dedup misses same timeline/text with new IDs. Local clear lacks general playback provenance; energy gate can clip output. |
+| R.58 Use the cascaded engine as a debugging oracle | Missing | No independent STT/text/TTS reference engine exists. It is an optional diagnostic aid; its absence does not establish a defect in the current native speech engine. |
+| R.59 Recommended rollout sequence | Implemented but needs improvement | Baseline has regression/CI/Railway release and native maintenance workflows. This run adds saved baseline measurements, staged tests, source backups and a feature-gated read rollout. |
 | R.60 Builder-agent implementation contract | Implemented but needs improvement | Native full-duplex model is the single speaking authority. App tracks partial acoustic state and keyword relevance; explicit turns/topics/playback/trace ownership needs improvement. |
 | R.61 Definition of “Eli vNext is ready” | Unable to verify | No pre-change turn-level/audio/network percentile evidence. Synthetic regression and live metadata can establish coverage; handset/carrier acceptance requires actual audio testing. |
 
@@ -166,8 +166,7 @@ Phase results below record changes without rewriting the historical diagnosis.
 4. Verify local/native/staging, deploy with no active call, check production hashes,
    logs and timing, retain previous source backups for rollback.
 
-No deployment yet for this audit. A phase is complete only when verification is
-recorded below. Report source: actual code, private production metadata snapshot
+All releases listed below are deployed and verified. Report source: actual code, private production metadata snapshot
 upgrade-baseline.json, regression tests, and current vendor contracts. The source
 documents' opaque citation placeholders are not independent verification.
 
@@ -180,14 +179,14 @@ documents' opaque citation placeholders are not independent verification.
 
 ## Tests, changed files, deployment and before/after measurements
 
-In progress. Existing baseline regression suite and new failing cases run before
+The baseline regression suite and reproduced failing cases ran before
 implementation. No acoustic p95 or effectively-once guarantee is asserted without
 the corresponding test evidence. Human handset/carrier quality remains distinct
 from deterministic software and synthetic audio tests.
 
 ## Implemented phase: conversation ownership and prepared reads
 
-Local and staged implementation, awaiting deployment verification:
+Implementation deployed in phase 1, followed by the production read activation:
 
 - `backend/app/phone_runtime.py`: call/turn/topic/response metadata traces, caller
   floor, pending tasks, interrupted output, playback marks and replay rejection.
@@ -221,7 +220,7 @@ text remains in the existing evidence path rather than creating a second persona
 
 ## Evidence collected during implementation
 
-Installed-native staging: 50 unit tests and 5 installed-Hermes adapter tests passed,
+Installed-native staging: 52 unit tests and 5 installed-Hermes adapter tests passed,
 plus real current persona/context and evidence-idempotence probes. The direct MCP
 read initially revealed an extra string `result` envelope in the native dispatcher;
 this was reproduced, fixed and regression-tested. A real empty Gmail query through
@@ -248,3 +247,156 @@ Focused/backend and production results are recorded in the next release section.
   trained semantic topic tracker. Very ambiguous pivots may be held for the summary.
 - The phone transport is PSTN/Twilio, not an in-app WebRTC microphone implementation.
 - iMessage reconnection and Notion activation remain explicitly deferred.
+
+## Requirement verification after implementation
+
+This table refines the baseline matrix with the actual delivered behavior. A source
+requirement remains **Implemented but needs improvement** when only bounded cases
+are covered. The report does not certify universal exactly-once delivery, acoustic
+latency targets, or all optional vendor recommendations.
+
+| Source IDs / detailed requirement | Current status | Concrete evidence and boundary |
+|---|---|---|
+| D.1-2, D.20, D.38; R.1-4, R.51: conversation/action separation | Already implemented and working | LiveCall audio loops never await ordinary native mutations. Synthetic 14-second lookup kept the voice live; native durable work finishes after hangup. |
+| D.3; R.12, R.15, R.20-21: classify execution | Implemented but needs improvement | Closed prepared-read grammar plus general background action lane. No general four-class semantic classifier; complex reads still enter the native agent. |
+| D.4-6, D.16-17, D.32-34; R.6-7: durable authoritative task state | Implemented but needs improvement | SQLite task/claim ledger and native work/effect journals own state. Explicit queued/claimed/running/waiting/resumed/completed/failed/uncertain/cancelled. Provider effect state is separate from the agent reply; no arbitrary tool completion guarantee. |
+| D.5: user/session/origin/logical/task/authorization/time binding | Already implemented and working | actor + authenticated identity; call_id; origin_turn_id; origin_topic_id; logical_request_id; id; idempotency_key; authorization JSON; created/updated/state. Continuations preserve origin and source-job linkage. Root-bound effect ledger supplies provider IDs and receipts. |
+| D.7, D.28; R.19: acknowledge after acceptance, once | Implemented but needs improvement | Delegated speech is withheld until enqueue; one accepted state update. Removed duplicate commentary/context stimuli. Last real-model simulation gave one short acknowledgment. Acoustic/model compliance remains a telephone acceptance item. |
+| D.8, D.37; R.26, R.31, R.41: vendor examples | Conflicting / obsolete | Keep existing SQLite, GPT-Live and hybrid vault retrieval. LiveKit/Temporal/Postgres/legacy Realtime APIs cannot simply be copied into this deployment. |
+| D.9-10, D.18-19, D.24; R.17: concurrency and multiple actions | Implemented but needs improvement | Reads have an independent claim lane and priority; ordinary actions remain actor-serialized. Multiple requests persist; batch effects deduplicate separately. No general DAG/resource-lock scheduler. |
+| D.11-13; R.10-11, R.30: topic-bound result relevance | Implemented but needs improvement | Current/recent turn-topic anchors, exact origin context, stricter topic terms, silent successful mutation policy. Reproduced unrelated-email false positive is fixed. Semantic topic understanding is still model/heuristic based. |
+| D.14-15, D.22, D.25-27, D.29, D.31: receipts/retry/reconciliation | Implemented but needs improvement | Per-effect starts/receipts survive crashes and modified connector batches. Known provider IDs support bounded read-back. A crash before saving a provider ID is held uncertain; arbitrary shell/browser effects have no universal reconciliation. |
+| D.21: explicit cancellation separate from speech interruption | Already implemented and working | Current-call cancel, authenticated web/iPhone endpoint and UI. Queued work closes, running work blocks subsequent tools; already accepted effects are never claimed undone. |
+| D.23: calendar/email example | Implemented but needs improvement | Current-day/tomorrow calendar and latest email have direct reads; authorized mutations keep native policy. Calendar read-back supports recognized connector writes with exact IDs/account and matching returned fields. |
+| D.30, D.36; R.50, R.52-55: trace and latency | Implemented but needs improvement | Persistent metadata events link call/turn/topic/response/task with acoustic/first-audio/delegation/persistence/settlement timings. Production cold AgentMail diagnostic completed in 1,367 ms; a handset p95/SLO is not established. |
+| D.35; R.56-57, R.61: acceptance regression gate | Implemented but needs improvement | Automated persistence, cancellation, duplicate, partial-batch, rapid-stack, quiet/pivot and synthetic audio checks pass. Handset noise, packet loss and acoustic echo chaos remain unverified. |
+| R.5, R.9-10: working conversational state | Implemented but needs improvement | Runtime tracks floor, turn/topic stack, pending jobs, interrupted outputs, generated/playout offsets and connection. Meaningful state changes enter model context; archive and tasks survive calls. No provider response.done/final-transcript event is fabricated. |
+| R.8, R.36: generated/sent/played separation | Implemented but needs improvement | Twilio marks cover general voiced output buffer progress. Marks returned after clear are invalidated. Primary audio has no session timestamps, so byte duration is never used to label transcript words heard. Unconfirmed generated speech is stored separately as tentative actor-scoped context, not learned as heard dialogue. |
+| R.13: synchronized read models | Missing | A bounded 15-second source snapshot exists; no full Gmail push-sync or Calendar replica. The measured direct path removes the dominant current model/queue delay without building a private-message mirror. |
+| R.14, R.18: freshness/narrow requests | Already implemented and working | Direct reads return source, observed time, cached/live and coverage; Gmail requests only one metadata record, calendar bounds one day/25 records in the source timezone, AgentMail remains bounded. |
+| R.16: hard deadlines | Implemented but needs improvement | Prepared reads have a 12-second caller-result deadline. A timed-out blocking read thread may finish later but cannot become a mutation or inject its stale result. General native actions retain their existing timeouts. |
+| R.22, R.27-28: turn-taking/backchannels | Implemented but needs improvement | Immediate buffered-audio clear and old-output fence preserve authorized actions. Zero overlap bytes in the controlled test. Local energy detection is not adaptive acoustic/semantic VAD; short real-world backchannels need acceptance testing. |
+| R.23: in-app WebRTC | Missing | The TestFlight app currently calls the real telephone number. No new microphone/WebRTC transport was built in this phone repair. |
+| R.24-25, R.32: telephony and one speaking authority | Already implemented and working | Twilio PCMU media uses one GPT-Live connection/output consumer. There is no second TTS engine or response.create loop. |
+| R.29: bounded downstream audio | Implemented but needs improvement | Chunks are forwarded immediately and Twilio buffer is cleared on interruption. No sentence/MP3 backlog. Full carrier/client jitter and queue latency are not measurable from server marks alone. |
+| R.33-35, R.38: repetition/cutoff diagnosis | Implemented but needs improvement | Same-span transcripts, audio event/timeline replay and inbound sequence replay are guarded. Exact outgoing-media loopback is diagnosed via short-lived hashes; acoustic echo cancellation is not claimed. Duplicate context/commentary preambles were reproduced in real-model staging and removed. |
+| R.37: no temperature workaround | Already implemented and working | No generation temperature change. Fixes address reproduced event, routing and lifecycle causes. |
+| R.39-40, R.42-49: continuity and memory | Implemented but needs improvement | Existing persona compiler/evidence/learning/policy and hybrid vault retrieval retained. Source audit confirms confidence, supersession, contradiction and principal-session gates. Phone episodes enter SessionDB and eligible evidence once. Full temporal-question quality is not benchmarked by this release. |
+| R.58: cascaded diagnostic oracle | Missing | Controlled native GPT-Live audio tests exist, but no independent STT/text/TTS reference engine. Building a second engine is not needed to fix the reproduced duplicate event paths. |
+| R.59-60: incremental implementation | Already implemented and working | Baseline f9d331d; f4c7234 backend with reads off; native backup/restart; production direct read; reads enabled with b06e0ac app release; ad0ee2a follow-up guards; 4d4262e playback provenance. Each retains source rollback and existing durable data. |
+
+## Test scenario coverage
+
+| Requested scenario | Evidence | Limit |
+|---|---|---|
+| Rapid topic pivot during work | Presence/continuity tests, unrelated-email regression and real-model synthetic 14-second lookup/topic-pivot test | Semantic relevance is conservative, not perfect. |
+| Multiple actions in one utterance | Complete fragment capture and per-child batch receipts/partial-outcome tests | General native agent still chooses execution order. |
+| Duplicate tool call | Root/effect identity, replay and changed-batch tests | Unrecognized shell effects excluded. |
+| Worker crash after write | Reopen durable start/accepted ledger, never replay; reconcile saved provider ID by read | Missing provider ID stays uncertain. |
+| Voice drop during action | Existing disconnect/hangup persistence tests | No live carrier outage deliberately induced. |
+| Barge-in while acknowledging | Immediate clear/output fence and synthetic overlapping speech | Handset audible result needs actual call. |
+| Explicit cancellation | Queued/running cancellation and iPhone double-tap regression | Irreversible effects already accepted may finish. |
+| Partial batch failure | Independent child verified/uncertain receipts and truthful completion guard | Unknown children remain for review. |
+| Delayed lookup after pivot | Result held, not marked heard; origin included when relevant again | Ambiguous topics may remain in summary. |
+| TTS/STT echo | Exact media loopback diagnostic fixture; single audio sender verified | Physical acoustic echo is not simulated by an exact-byte fixture. |
+| Duplicate final transcript | GPT-Live has fragments, not finals; identical timeline/text with new ID is deduplicated | No fictional provider final event used. |
+| Reconnect replay | One activated stream ticket and durable origin/delegation/effect IDs; sequence replay rejected | New telephone calls are distinct sessions. |
+| Simultaneous pending tasks | Independent read lane plus distinct origins for rapid stacked requests | Ordinary mutations remain actor-serialized. |
+| Very fast interruption | First voiced input clears Twilio buffer; cleared marks never count heard | End-to-end carrier clearing time unknown. |
+| Short pauses vs end-of-turn | Fragments remain one request until audio and transcripts settle; post-commit speech creates new origin | Long thoughtful pauses remain a voice-model acceptance case. |
+
+## Production verification and rollout record
+
+Verified 2026-09-21 UTC:
+
+- Native source release: `ad0ee2abbce852c18088ab4348a76024b95a6333`.
+  Final backend playback-provenance correction: `4d4262eec1a1072fd12c62ec12ddae931502542e`.
+  Every production phone-module hash matches the repository after newline normalization.
+- Web/iPhone cancellation UI: `b06e0acccbeb330540b50bd18ce0b8b063db9ece`.
+  Expo production update group `f22d7c87-09ec-42b0-8514-27c71d3fe053` was published
+  against the compatible installed runtime. This is an OTA update, not a new binary.
+- CI: 173 backend tests, 46 web tests/build, 52 native unit tests, 31 iPhone tests,
+  mobile typecheck/export all passed. Installed native staging also passed 5 gateway
+  adapter tests and the current identity/persona/evidence probes.
+- Native gateway running, phone connected, no drain left behind, zero active agents
+  at verification; configuration preserved across both controlled restarts.
+- `PHONE_FAST_READS_ENABLED=true`, GPT-Live enabled, PIN false, follow-up mode app.
+  Bridge heartbeat age 0.099 seconds at final capture; both identity-scoped personality
+  packets were 51 seconds old and populated.
+- No test email, text, WhatsApp or outbound telephone call was sent. Production
+  diagnostics were read-only. iMessage/Notion were not reconnected.
+
+| Measurement | Before | After | Interpretation |
+|---|---:|---:|---|
+| Comparable controlled native inbox reads | 10.4 s and 15.96 s | 1.367 s queue-to-result | One uncached new production sample; not an acoustic percentile. |
+| Actual provider inbox read | 186 / 405 ms historical successes | 421 ms | Main saving came from removing general model/queue overhead. |
+| New read claim | Historical mixed-task median 652 ms | 230 ms | Independent read lane; workload/sample populations differ. |
+| New native read processing | Historical mixed-task median 15,217 ms | 797 ms | No model round in prepared read. |
+| Gmail empty-query probe | 875 ms direct MCP | 1,297 ms via native dispatcher | Validates current connector path, not a before/after optimization claim. |
+| Synthetic voice overlap | Original real-call value unavailable | 0 voiced bytes forwarded over caller speech | Does not establish carrier/handset acoustic delay. |
+
+Release CI records: [final backend and web](https://github.com/practiceopsai/Dr.-Shaye-Dashboard/actions/runs/35562569371),
+[native guards](https://github.com/practiceopsai/Dr.-Shaye-Dashboard/actions/runs/35562079446),
+[iPhone verification](https://github.com/practiceopsai/Dr.-Shaye-Dashboard/actions/runs/35561902025),
+[iPhone publication](https://github.com/practiceopsai/Dr.-Shaye-Dashboard/actions/runs/35561942775).
+Private source verification, native backup manifests, staged output and synthetic
+checks are retained in the dated production repair record.
+
+Rollback points: the baseline public code is `f9d331d`; phase-one public code is
+`f4c7234`. Turn off `PHONE_FAST_READS_ENABLED` and redeploy to disable routing into
+the new lane while retaining durable jobs. Original native files are in the first
+backup manifest; phase-one native files are in `backup-v2`. A full rollback restores
+matching backend/native source together. Do not roll a live task database back to
+an older snapshot, since that could erase receipts and invite duplicate effects.
+
+The user has been asked to perform the final real-phone acceptance check. This
+report intentionally leaves acoustic SLOs, a full synchronized read replica,
+in-app WebRTC and unrestricted-provider reconciliation unverified or missing;
+it does not describe the entire blueprint as complete.
+
+### Final provenance correction
+
+A real-model staging check exposed another clock mismatch: primary GPT-Live audio
+chunks omit session timestamps, while transcript fragments use session time.
+Cumulative audio byte duration therefore cannot prove that particular transcript
+words were played. The implementation now keeps those clocks separate. Generated
+assistant text with unverified playback is retained as tentative, actor-scoped
+context; it is excluded from heard dialogue and persona evidence. Confirmed user
+speech and durable task receipts retain their existing memory routes. This follows
+[the provider transcript/playback contract](https://developers.openai.com/api/docs/guides/live-conversations#manage-speech-and-transcripts).
+Precise per-word playback provenance would require additional timestamp alignment;
+this release does not pretend to have it.
+
+The additional real-model topic-pivot test passed: the caller switched to a general
+question about short meetings while a 14-second lookup continued. Eli answered the
+new topic, one task completed, and the old email subject was held in the summary.
+No old result was spoken and zero voiced bytes were forwarded over caller speech.
+
+The synthetic audio records were captured before the final provenance correction.
+Their generated-text, job-count and overlap measurements remain useful. Any older
+per-fragment `played` labels in those raw records are not evidence that particular
+words were heard; the final implementation and regression tests enforce the stricter
+clock separation described above.
+
+## Reproduction and evidence locations
+
+- `backend/tests/test_phone_upgrade.py`: origin/replay isolation, independent read
+  claim, queued/running cancellation, output fence, echo observation, transcript
+  clock separation and unconfirmed-context retention.
+- Existing `test_phone_live.py`, `test_phone_presence.py`, `test_phone_continuity.py`:
+  real transport contract, hangup preservation, quiet result delivery, clarification,
+  callback boundaries and late-topic origin. Updated assertions retain behavioral checks.
+- `integrations/hermes_phone/test_reads_effects.py` and `test_operations.py`:
+  source/identity/cache contracts, read-back failure, crash recovery, batch dedup,
+  existing provider IDs, incomplete outcomes and status questions versus instructions.
+- Web and iPhone phone-page tests exercise cancellation without claiming an already
+  accepted provider effect was reversed.
+- Private production evidence: `upgrade-baseline.json`, `release-verification.json`,
+  `deployment.json`, `deployment-v2.json`, `tests-staged.txt`, `probe_read.log`, and
+  synthetic normal/fast/pivot audio verification records. These contain no API keys.
+
+No automatic learning policy was granted new authority. Measured slow/failed tool
+routes still enter the existing bounded performance feedback, and eligible caller
+facts still pass the existing persona admission/contradiction process. Corrections
+from this maintenance run are recorded as operator instructions with provenance,
+not misrepresented as Dr. Shaye's personal preferences.
