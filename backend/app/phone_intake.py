@@ -23,18 +23,39 @@ def contact(mention,contacts,channel):
     return None
 
 
+def named_recipient(source,contacts):
+    """Recover a single configured name, never choose among two named people."""
+    found={}
+    for email,entry in contacts.items():
+        aliases=[email,entry.get('phone',''),entry.get('name','')]+[x for x in entry.get('name','').split() if x.lower() not in {'dr','dr.','doctor'}]
+        for alias in aliases:
+            if alias and (match:=re.search(r'(?<!\w)'+re.escape(alias)+r'(?!\w)',source,re.I)):
+                found[email]=match.group();break
+    return next(iter(found.values())) if len(found)==1 else ''
+
+
+def affirmative(text):
+    return bool(re.fullmatch(r"\s*(?:(?:yes|yeah|yep|correct|right|exactly|that['’]s correct|that['’]s right|that is correct|okay|ok)[,.!\s]*)+",text,re.I))
+
+
+def approved_proposals(history):
+    return [h for h in history if h.get('spoken_prompt') and affirmative(h.get('answer',''))]
+
+
 def prepare_task(task,contacts):
     kind=task['kind']
     if kind not in {'calendar','article'}:return message_plan(task,contacts)
     details=task.get('details',{})
     details={**details,**{k:details[k].strip().casefold() for k in ('channel','organizer','selection') if k in details}}
     source='\n'.join(task['quotes'])
-    mention=task.get('recipient','')
-    if task.get('question'):return {},task['question']
+    mention=task.get('recipient','') or named_recipient(source,contacts)
     if not mention or normalized(mention) not in normalized(source):return {},'Who should receive the '+kind+'?'
     if kind=='article':
         channel=details.get('channel')
         if channel not in CHANNELS:return {},'Should I send the article by email, WhatsApp, or iMessage?'
+        channel_evidence=source+'\n'+'\n'.join(h['spoken_prompt'] for h in approved_proposals(task.get('clarification_history',[])))
+        if not re.search(CHANNELS[channel],channel_evidence,re.I):
+            return {},'Should I send the article by email, WhatsApp, or iMessage?'
         if not details.get('query'):return {},'What topic should the article cover?'
         recipient=contact(mention,contacts,'email' if channel=='email' else 'phone')
         if not recipient:return {},'What exact address or number should I use for '+mention+'?'
@@ -43,19 +64,23 @@ def prepare_task(task,contacts):
         return {'operation':'find_send_article','article':{**details,'recipient':recipient,'approval_quote':source},
                 'required_receipts':[channel]},''
     organizer=details.get('organizer')
-    if organizer not in {'eli','principal'}:return {},"Should I send the invitation from Eli's email or put it on Dr. Shaye's calendar? Eli's invitation includes Dr. Shaye and the guest."
     missing=[name for name in ['title','date','time','timezone','duration_minutes'] if not details.get(name)]
-    if missing:return {},'For the calendar invitation, what '+', '.join(missing).replace('duration_minutes','duration')+' should I use?'
+    if missing or organizer not in {'eli','principal'}:
+        question=('For the calendar invitation, what '+', '.join(missing).replace('duration_minutes','duration')+' should I use? ') if missing else ''
+        if organizer not in {'eli','principal'}:question+="Should Eli's email or Dr. Shaye's calendar host it? Eli's invitation includes Dr. Shaye and the guest."
+        return {},question.strip()
     try:
         start=datetime.fromisoformat(details['date']+'T'+details['time'])
         if start.tzinfo is not None:raise ValueError()
         ZoneInfo(details['timezone'])
         if not 1<=int(details['duration_minutes'])<=1440:raise ValueError()
     except (ValueError,ZoneInfoNotFoundError):return {},'Please confirm the event date, time, time zone, and duration.'
-    if normalized(details['title']) not in normalized(source):return {},'What title should I use for the invitation?'
+    confirmations=approved_proposals(task.get('clarification_history',[]))
+    if normalized(details['title']) not in normalized(source) and not any(normalized(details['title']) in normalized(h['spoken_prompt']) for h in confirmations):
+        return {},'What title should I use for the invitation?'
     recipient=contact(mention,contacts,'email')
     if not recipient:return {},'What email address should receive the calendar invitation?'
-    return {'operation':'calendar_invitation','calendar':{**details,'recipient':recipient,'approval_quote':source},
+    return {'operation':'calendar_invitation','calendar':{**details,'recipient':recipient,'approval_quote':source,'confirmed_proposals':confirmations},
             'required_receipts':['calendar']},''
 
 

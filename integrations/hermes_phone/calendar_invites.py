@@ -48,9 +48,13 @@ def run(job,settings,perf,*,services=None,invoke=None,calendar_call=None,config=
     if isinstance(plan,str):plan=json.loads(plan)
     spec=plan['calendar'];root=job.get('root_id') or job['id']
     source=job['transcript'].rsplit('New caller speech: ',1)[-1];quote=spec.get('approval_quote','')
+    confirmed_title=any(spec['title'].casefold() in h.get('spoken_prompt','').casefold()
+        and h.get('answer') and h['answer'] in quote
+        and re.fullmatch(r"\s*(?:(?:yes|yeah|yep|correct|right|exactly|that['’]s correct|that['’]s right|that is correct|okay|ok)[,.!\s]*)+",h['answer'],re.I)
+        for h in spec.get('confirmed_proposals',[]))
     if job.get('identity')!=settings.get('identities',{}).get(job['actor']):raise PermissionError('Identity mismatch')
     if (plan.get('operation')!='calendar_invitation' or spec.get('organizer') not in {'eli','principal'}
-        or not quote or quote not in source or spec['title'].casefold() not in quote.casefold()
+        or not quote or quote not in source or (spec['title'].casefold() not in quote.casefold() and not confirmed_title)
         or re.search(operations.PATIENT,quote,re.I)
         or re.search(r"\b(?:do not|don't|never)\s+(?:send|invite|create|schedule)|\bcancel\b",quote,re.I)):
         raise ValueError('Invitation lacks caller evidence')

@@ -200,7 +200,10 @@ class Conversation:
         if not caller:
             return None, [], ''
         # Keep assistant speech distinct: it supplies context, never authorization.
-        context = [{'role': f['role'], 'text': f['text']} for f in eligible if f not in fresh][-60:]
+        # Later assistant speech cannot become the question an earlier "yes"
+        # answered. Bind context to the beginning of this caller turn.
+        boundary=min(f['start_ms'] for f in fresh)
+        context = [{'role': f['role'], 'text': f['text']} for f in eligible if f not in fresh and f['end_ms']<=boundary][-60:]
         context_json = json.dumps(context, ensure_ascii=False)
         if len(caller) > 6000 or len(context_json) > 10000 or contains_phi(caller + context_json):
             raise ValueError('request_requires_review')
@@ -719,7 +722,9 @@ class LiveCall:
             await asyncio.sleep(.3)
 
     def ignore_social(self, caller):
-        return social_only(caller) and (bool(re.search(r'\b(?:bye|goodbye|thanks|thank you)\b',caller,re.I))
+        from .phone_intake import affirmative
+        if re.fullmatch(r'\s*(?:um|uh|ah|hmm)[,.!\s]*',caller,re.I):return True
+        return social_only(caller) and (not affirmative(caller)
                                        or not phone.store().questions(self.call['actor'],self.call['id']))
 
     def save_final_request(self):

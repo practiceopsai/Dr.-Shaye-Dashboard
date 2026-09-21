@@ -103,3 +103,75 @@ def test_current_task_status_uses_local_ledger_without_another_job(configured):
     with phone.store().db() as db:assert db.execute('SELECT count(*) FROM phone_jobs').fetchone()[0]==2
     assert not presence.task_status_question('Did you send it? Please send it again.')
     assert not presence.task_status_question('Did you send it and email Owner hello?')
+
+
+def test_pronoun_article_keeps_recipient_while_channel_is_missing(configured):
+    quote="Send Owner a calendar invite at 2 and send him an AI article"
+    call,initial=intake(configured,quote)
+    identifier=dispatch.commit_plan(initial,plan(task('article','send him an AI article',recipient='',details={'query':'AI'},question='Which channel?')))[0]
+    assert 'Owner' in row(identifier)['transcript'].rsplit('New caller speech: ',1)[-1]
+    revision=answer(call,identifier,'By email.')
+    speech=revision['transcript'].rsplit('New caller speech: ',1)[-1]
+    actual=dispatch.commit_plan(revision,plan(task('article',speech,recipient='',question='Who should receive it?',details={'query':'AI','channel':'email'})))[0]
+    assert row(actual)['state']=='queued'  # A stale model question cannot erase a resolved required field.
+    assert json.loads(row(actual)['plan'])['article']['recipient']=='owner@example.com'
+
+
+def test_ambiguous_answer_or_fragment_never_creates_another_pending_task(configured):
+    call,initial=intake(configured,'Email Owner about the meeting')
+    identifier=dispatch.commit_plan(initial,plan(task('email','Email Owner about the meeting',question='Which meeting?')))[0]
+    reply=live.enqueue(call,'fragment','New caller speech: should be an','should be an',intake=True)
+    assert dispatch.commit_plan(row(reply),plan(task('global','should be an',question='Could you finish that thought?')))==[]
+    assert [q['id'] for q in phone.store().questions(call['actor'],call['id'])]==[identifier]
+
+
+def test_article_cannot_infer_imessage_from_the_word_send(configured):
+    quote='Send Owner an AI article.'
+    call,initial=intake(configured,quote)
+    identifier=dispatch.commit_plan(initial,plan(task('article',quote,details={'query':'AI','channel':'imessage'})))[0]
+    assert row(identifier)['state']=='waiting_for_input'
+    assert 'email, WhatsApp, or iMessage' in row(identifier)['question']
+    assert phone.store().claim() is None
+
+
+def test_confirmed_spoken_proposal_is_bound_to_answered_task(configured):
+    call,initial=intake(configured,'Send Owner an invitation')
+    identifier=dispatch.commit_plan(initial,plan(task('calendar','Send Owner an invitation',question='Title and duration?')))[0]
+    prompt='One hour, titled AI Test Meeting, right?'
+    text='Earlier conversation context (JSON): '+json.dumps([{'role':'assistant','text':prompt}])+ '\nNew caller speech: Yes, correct'
+    reply=live.enqueue(call,'confirmation',text,'Yes, correct',intake=True)
+    revision=dispatch.commit_plan(row(reply),plan(task('clarification','Yes, correct',resume_request_id=identifier)))[0]
+    history=json.loads(row(revision)['plan'])['clarification_history']
+    assert history[0]['spoken_prompt']==prompt and history[0]['answer']=='Yes, correct'
+
+
+def test_confirmation_context_excludes_questions_spoken_after_the_answer():
+    conversation=live.Conversation()
+    conversation.append(fragment('proposal','One hour, correct?',end=1000,role='assistant'))
+    conversation.append(fragment('answer','Yes, correct',end=2000))
+    conversation.append(fragment('later','Who should receive the article?',end=3000,role='assistant'))
+    transcript,_,_=conversation.request(3500)
+    assert dispatch.last_spoken_prompt({'transcript':transcript})=='One hour, correct?'
+    assert 'Who should receive' not in transcript
+
+
+def test_planner_sees_queued_task_payload_for_reconfirmation(configured,monkeypatch):
+    call,initial=intake(configured,'Send Owner an AI article by email.')
+    root=dispatch.commit_plan(initial,plan(task('article','Send Owner an AI article by email.',details={'query':'AI','channel':'email'})))[0]
+    reply=live.enqueue(call,'recipient-confirmation','New caller speech: The article should be sent to Owner','The article should be sent to Owner',intake=True)
+    captured={}
+    class Client:
+        def __init__(self,**kw):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,url,**kw):
+            captured.update(json.loads(kw['json']['input']))
+            from types import SimpleNamespace
+            return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps({'conversation_only':True,'jobs':[],'routing_question':''})}]}]})
+    monkeypatch.setattr(dispatch.httpx,'AsyncClient',Client)
+    configured[0].phone_dispatch_model='test'
+    result=asyncio.run(dispatch.plan_intake(row(reply),configured[0]))
+    existing=captured['current_tasks'][root]
+    assert existing['state']=='queued' and existing['recipient']=='Owner' and existing['details']['query']=='AI'
+    assert dispatch.commit_plan(row(reply),result)==[]
+    assert list(presence.task_states(call))==[root]

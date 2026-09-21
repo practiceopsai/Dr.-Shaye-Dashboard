@@ -38,13 +38,13 @@ def test_missing_meeting_stops_at_intake_not_after_hermes(configured):
     assert phone.store().questions(call['actor'],call['id'])[0]['id']==ids[0]
 
 
-def test_payload_missing_from_quote_cannot_enter_execution(configured):
+def test_shared_antecedent_is_preserved_when_planner_quote_omits_it(configured):
     call,row=intake(configured,"text Owner that I'm running late and email him the same thing")
     plan=compound();plan['jobs'][1]['quotes']=['email him the same thing']
     ids=dispatch.commit_plan(row,plan)
     assert phone.store().claim()['id']==ids[0]
-    assert phone.store().claim() is None
-    assert phone.store().questions(call['actor'])[0]['id']==ids[1]
+    assert phone.store().claim()['id']==ids[1]
+    assert phone.store().questions(call['actor'])==[]
 
 
 def test_new_question_misclassified_as_clarification_is_saved_without_resuming(configured):

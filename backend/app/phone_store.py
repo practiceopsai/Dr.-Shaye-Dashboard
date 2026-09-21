@@ -191,7 +191,7 @@ class PhoneStore:
             db.execute('UPDATE phone_notices SET heard_at=?,heard_call=? WHERE job_id=? AND actor=? AND heard_at IS NULL',
                        (time.time(),call_id,job_id,actor))
 
-    def resume(self, actor, request_id, answer, call_id, *, source_job=None, replan=False, connection=None):
+    def resume(self, actor, request_id, answer, call_id, *, source_job=None, replan=False, connection=None, spoken_prompt=''):
         """Consume one answer atomically. A retry returns the same continuation.
 
         Operation receipts use root_id across continuations, so completing a
@@ -240,7 +240,7 @@ class PhoneStore:
                 plan=json.loads(row['plan'] or '{}')
                 plan['continuation_replan']=True
                 plan['clarification_history']=plan.get('clarification_history',[])+[
-                    {'question_id':row['id'],'question':row['question'],'answer':answer,'source_job':source_job}]
+                    {'question_id':row['id'],'question':row['question'],'spoken_prompt':spoken_prompt,'answer':answer,'source_job':source_job}]
                 db.execute('UPDATE phone_jobs SET plan=? WHERE id=?',(json.dumps(plan),identifier))
             if replan or row['execution_class']=='intake':
                 db.execute("UPDATE phone_jobs SET state='planning',execution_class='intake' WHERE id=?",(identifier,))

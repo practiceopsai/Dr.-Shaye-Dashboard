@@ -83,6 +83,8 @@ def task_states(call):
             mutation=plan.get('atomic_kind') in {'email','whatsapp','imessage','calendar','article','global'}
             result[root]={'task_id':root,'question_id':row['id'] if row['state']=='waiting_for_input' else None,
                 'scope':plan.get('atomic_scope',''),'state':row['state'],'details':plan.get('details',{}),
+                'kind':plan.get('atomic_kind',''),'recipient':plan.get('recipient',''),
+                'request':row['transcript'].rsplit('New caller speech: ',1)[-1][:2500],
                 'question':row['question'] if row['state']=='waiting_for_input' else '',
                 'completion_allowed':row['state']=='completed' and (bool(receipts) or not mutation),
                 'receipts':receipts,'result':(row['error'] or row['result'])[:500] if row['state'] in {'completed','failed','uncertain'} else ''}

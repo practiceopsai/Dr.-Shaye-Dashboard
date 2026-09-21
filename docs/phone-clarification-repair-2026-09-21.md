@@ -59,3 +59,22 @@ Release checks and real-model replay results are recorded with the deployment ev
 The actual GPT-5.6 Luna planner replay preserved two tasks across four utterances and multiple clarification revisions: two fully specified actions, zero remaining questions, zero orphan roots. The GPT-Live-1 cloud voice replay completed both simulated deliveries, answered a topic change, and accurately reported the invitation and WhatsApp article when asked. It forwarded all 36,200 ms of generated voiced audio, issued no local audio clear, and reported no provider errors. Both completions had distinct simulated receipts. No real invitation or message was sent by these rehearsals.
 
 The rehearsals also caught a channel-case mismatch (`WhatsApp` versus `whatsapp`) and unnecessary requests for known contact addresses. Channel values are now constrained and normalized, configured contacts are supplied to intake, and continuation evidence is retained verbatim rather than re-quoted by the planner. Current-task status questions use the local execution ledger.
+
+## Failed handset acceptance and follow-up correction
+
+The first repair did **not** pass the real delivery test. In the subsequent 160-second call, neither requested action reached native execution and there were **zero action receipts**. This call did not contain the earlier explicit "sent both" claim; it contained premature acceptance and repeated questions.
+
+| Approximate time | Caller evidence | Breakpoint |
+| --- | --- | --- |
+| 19 seconds | Calendar invitation to Fabio at 2:00; "send him an AI article" | The article root retained only the second phrase, losing Fabio as the antecedent. The planner also incorrectly left recipients empty for non-message tasks. |
+| 33–48 seconds | Tomorrow PM; Pacific; Eli's email | Calendar revisions retained these details but still needed duration and title. |
+| 65 seconds | "It should be by email" | Article channel was updated, but the task asked who should receive it. |
+| 76 seconds | "Yes, correct" | The generated voice transcript contains a preceding proposal for a one-hour invitation. Its affirmative answer was not attached to that proposal; another ambiguous pending job was created instead. Generated transcript timestamps do not prove handset audio playback. |
+| 81 seconds | "The article should be sent to Fabio" | The saved task still asked for its recipient because a stale planner question overrode resolvable fields. |
+| Later turns | Short answers and incomplete conversational fragments | Five additional ambiguous pending roots accumulated. Neither actual action ran. |
+
+The follow-up preserves shared recipient evidence at intake, supplies current task payloads to the planner, and binds answers to the preceding spoken proposal and the selected task ID. Later assistant speech is excluded from an earlier answer's context. A caller affirmation can confirm a proposal; assistant speech alone cannot authorize an action.
+
+Required structured fields now determine remaining calendar/article questions. A stale question cannot erase known information. Fillers and ambiguous answer-routing questions do not create new executable or pending tasks. Reconfirming the recipient of an already queued task is conversation, not another send. An article with no chosen channel remains pending; "send" alone does not authorize iMessage.
+
+An actual-model replay of all 15 captured caller utterances retained exactly two roots: the article ready by email, and the calendar waiting only for its title, with the caller-confirmed one-hour duration preserved. Adding a title made both tasks ready. Passing those exact planner payloads through the native operation guards produced two separate **simulated** verified sends; repeating execution produced no additional sends. The simulated invitation included both the principal and guest. These results establish regression coverage, not real delivery.

@@ -56,6 +56,14 @@ class TaskActionTests(unittest.TestCase):
         self.invoke.side_effect=TimeoutError()
         self.assertFalse(self.calendar()['success']);self.calendar();self.invoke.assert_called_once()
 
+    def test_title_proposal_requires_the_callers_recorded_affirmation(self):
+        self.quote="Send Fabio a calendar invitation tomorrow at 2 PM Pacific for one hour from Eli's email.\nYes, correct"
+        self.job['transcript']='New caller speech: '+self.quote;self.spec['approval_quote']=self.quote
+        self.spec['confirmed_proposals']=[{'spoken_prompt':'Shall I title it AI Test Meeting?','answer':'Yes, correct','question_id':'question-one'}]
+        self.assertTrue(self.calendar()['source_verified'])
+        self.spec['confirmed_proposals'][0]['answer']='No'
+        with self.assertRaises(ValueError):self.calendar()
+
     def test_principal_calendar_cannot_be_mutated_by_operator(self):
         self.spec['organizer']='principal';connector=Mock()
         result=self.calendar(config={},calendar_call=connector)

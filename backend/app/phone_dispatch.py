@@ -15,7 +15,7 @@ import httpx
 from . import phone
 from .phone_runtime import classify_read, silent_completion
 from .security import contains_phi
-from .phone_intake import message_plan
+from .phone_intake import named_recipient
 
 
 KINDS = ['email', 'imessage', 'whatsapp', 'calendar', 'article', 'draft', 'read', 'memory', 'global', 'clarification']
@@ -23,6 +23,7 @@ SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'properties': {
         'conversation_only': {'type': 'boolean'},
+        'routing_question': {'type':'string'},
         'jobs': {'type': 'array', 'maxItems': 12, 'items': {
             'type': 'object', 'additionalProperties': False,
             'properties': {
@@ -37,7 +38,7 @@ SCHEMA = {
                     'required':['title','date','time','timezone','duration_minutes','channel','query','selection','organizer']},
             }, 'required': ['scope', 'quotes', 'kind', 'after','recipient','message','question','resume_request_id','details'],
         }},
-    }, 'required': ['conversation_only', 'jobs'],
+    }, 'required': ['conversation_only', 'routing_question', 'jobs'],
 }
 SCHEMA['properties']['jobs']['items']['properties']['details']['properties'].update({
     'channel':{'type':'string','enum':['','email','imessage','whatsapp','email_invitation','calendar']},
@@ -55,7 +56,9 @@ Resolve "the same thing" and "him" BEFORE accepting: for "text Fabio that I'm ru
 late and email him the same thing", BOTH jobs need recipient Fabio and message
 "I'm running late". The email quotes MUST include the antecedent containing Fabio
 and the message as well as the email instruction. Never omit a payload to isolate a task.
-recipient and message are exact caller substrings, empty for non-message jobs.
+recipient is an exact caller name/address for messaging, calendar AND article jobs.
+Only message is empty for non-message jobs. Preserve a known recipient even while
+another detail is missing. Include the antecedent for "him" in the job's quotes.
 If an essential detail is missing, set question to a brief specific clarification
 NOW; it will not enter execution. "Email Fabio about the meeting" needs which
 meeting and what to say. Do not turn a topic into invented message text.
@@ -72,10 +75,29 @@ two o'clock tomorrow, label it AI Test Meeting" answers the calendar question;
 it does NOT start a new email job. "About AI and send the link to Fabio" extends
 the existing article task. "Go ahead and take care of both" targets the two existing
 tasks; never recreate them with missing payloads. All other jobs have empty resume_request_id.
+current_tasks includes tasks already queued, running or finished, as well as open
+questions. A reconfirmation of the SAME recipient/content, such as "the article
+should be sent to Fabio", does not request another article if that exact task is
+already queued. Return conversation_only=true and no jobs for such confirmations.
+Use the task's current details and original request to distinguish confirmation
+from explicitly requested additional work. Never duplicate a task merely because
+its clarification question disappeared when it entered execution. A requested
+change to a queued task is not permission to send both versions: ask for routing
+clarification if the existing task cannot be updated through an open question.
 The open question includes its original request, scope, kind, details, and exact ID.
 Attach each answer to that ID. For a clarification ANSWER, question MUST be empty:
 do not copy the old question or execute the task. The original task will be revalidated.
 If an answer could address two different tasks, ask which task; do not choose one.
+Use conversation_only=true, jobs=[], routing_question for an ambiguous answer.
+Never create a new global job to ask which pending task an answer belongs to.
+Fillers, unfinished fragments, requests to repeat/hear, and social acknowledgments
+create no jobs. Do not manufacture a new task for "should be an", "Are", "Hello",
+or a conversational "yes". Leave routing_question empty unless a real answer needs
+disambiguation. Otherwise routing_question is always empty.
+An affirmative reply to the immediately preceding spoken proposal can supply that
+proposal's details to the matching pending task. Use last_spoken_prompt and the
+question/answer pairs in clarification_history; assistant speech ALONE never grants
+permission. A "yes" confirming a one-hour invite updates its duration, not a new job.
 When continuation_replan is supplied, return EXACTLY ONE fully rebuilt task using
 ALL original caller words and all answers. Keep its original intent, including
 resolved recipient, date, time, channel and title. Do not answer another open question.
@@ -90,6 +112,9 @@ channel is email or WhatsApp. Store the topic in details.query, channel in
 details.channel, and selection as any or latest as authorized. Optional publication
 preference is NOT required for an unrestricted article search. The chosen URL is
 lookup output authorized by this task, not text the caller must dictate.
+"Send an article" without a stated delivery channel requires a channel question;
+the word "send" alone never means text/iMessage. Do not borrow the channel from a
+different task, such as the calendar's hosting email account.
 Calendar details: title, ISO date, 24-hour time, IANA timezone, duration_minutes.
 Resolve tomorrow relative to supplied current_datetime. Ask about ambiguous 2:00
 AM/PM, absent timezone or duration. Never omit known values when asking for others.
@@ -117,6 +142,8 @@ def validate_plan(data, caller):
     if not isinstance(data, dict) or type(data.get('conversation_only')) is not bool:
         raise ValueError('Invalid plan')
     jobs = data.get('jobs')
+    routing=data.get('routing_question','')
+    if not isinstance(routing,str) or len(routing)>1000 or contains_phi(routing):raise ValueError('Invalid task payload')
     if not isinstance(jobs, list) or len(jobs) > 12 or data['conversation_only'] != (not jobs):
         raise ValueError('Invalid job count')
     seen = set()
@@ -145,12 +172,27 @@ def validate_plan(data, caller):
     return data
 
 
+def last_spoken_prompt(row):
+    marker='Earlier conversation context (JSON): '
+    before=row['transcript'].split('New caller speech: ',1)[0]
+    if marker not in before:return ''
+    try:context=json.JSONDecoder().raw_decode(before.split(marker,1)[1])[0]
+    except (ValueError,TypeError):return ''
+    parts=[]
+    for item in reversed(context):
+        if item.get('role')=='assistant':parts.append(item.get('text',''))
+        elif parts:break
+    return ''.join(reversed(parts))[-3000:]
+
+
 async def plan_intake(row, cfg):
-    from .phone_presence import context_for
+    from .phone_presence import context_for,task_states
     caller = row['transcript'].rsplit('New caller speech: ', 1)[-1]
     context = context_for({'actor': row['actor'],'id':row['call_id']}, cfg)
     payload = {'transcript': row['transcript'], 'session_context': context,
-               'open_questions': phone.store().questions(row['actor'],row['call_id'])}
+               'open_questions': phone.store().questions(row['actor'],row['call_id']),
+               'current_tasks':task_states({'actor':row['actor'],'id':row['call_id']}),
+               'last_spoken_prompt':last_spoken_prompt(row)}
     prior=json.loads(row.get('plan') or '{}')
     if prior.get('continuation_replan'):
         payload.update(continuation_replan=prior,open_questions=[])
@@ -170,7 +212,7 @@ async def plan_intake(row, cfg):
     text = ''.join(c.get('text', '') for item in data.get('output', [])
                    for c in item.get('content', []) if c.get('type') == 'output_text')
     parsed=json.loads(text)
-    if prior.get('continuation_replan') and len(parsed.get('jobs',[]))==1:
+    if len(parsed.get('jobs',[]))==1 and (prior.get('continuation_replan') or parsed['jobs'][0].get('kind')=='clarification'):
         # The canonical task owns this evidence. Re-summarizing cannot drop an
         # answer, substitute wording or import another task's caller words.
         parsed['jobs'][0]['quotes']=[caller]
@@ -181,6 +223,14 @@ def commit_plan(row, plan):
     """One transaction creates all children or none; retries reuse stable IDs."""
     caller = row['transcript'].rsplit('New caller speech: ', 1)[-1]
     validate_plan(plan, caller)
+    from .phone_presence import work_requested
+    routing=plan.get('routing_question','')
+    tasks=[]
+    for task in plan['jobs']:
+        if not json.loads(row.get('plan') or '{}').get('continuation_replan') and task['kind']=='global' and task.get('question') and not work_requested('\n'.join(task['quotes'])):
+            routing=routing or task['question']  # A routing question is dialogue, never a new pending job.
+        else:tasks.append(task)
+    plan={**plan,'jobs':tasks,'conversation_only':not tasks}
     now = time.time()
     with phone.store().db() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -208,10 +258,15 @@ def commit_plan(row, plan):
                 allowed={q['id'] for q in phone.store().questions(row['actor'],row['call_id'])}
                 if resume_id not in allowed:raise ValueError('Clarification target is not in this call')
                 identifier=phone.store().resume(row['actor'],resume_id,quotes,row['call_id'],
-                    source_job=row['id'],replan=True,connection=db)
+                    source_job=row['id'],replan=True,connection=db,spoken_prompt=last_spoken_prompt(row))
                 ids[index]=identifier
                 continue  # Saving an answer is not an executable/completed task.
             elif resume_id:raise ValueError('A new task cannot resume another task')
+            if task['kind'] in {'calendar','article','email','imessage','whatsapp'}:
+                recipient=task.get('recipient') or named_recipient(caller,phone.callers())
+                if recipient and recipient.casefold() in caller.casefold() and recipient.casefold() not in quotes.casefold():
+                    task={**task,'quotes':[caller]};quotes=caller  # Preserve the caller's pronoun antecedent.
+                task={**task,'recipient':recipient,'clarification_history':prior.get('clarification_history',[]) if continuation else []}
             from .phone_intake import prepare_task
             prepared,question=prepare_task(task,phone.callers())
             transcript = ('Execute ONLY this atomic job: '+task['scope']+'\n'
@@ -230,6 +285,7 @@ def commit_plan(row, plan):
                  row['origin_turn_id'],row['origin_topic_id'],identifier,'child:'+identifier,row['authorization'],
                  json.dumps({**(read or {}),**prepared,'atomic_scope':task['scope'],'atomic_kind':task['kind'],
                              'source_utterance':caller,'resume_request_id':resume_id,'details':task.get('details',{}),
+                             'recipient':task.get('recipient',''),
                              'clarification_history':prior.get('clarification_history',[]) if continuation else []}),
                  'foreground_read' if read else 'background_action',80 if read else 60,
                  'silent_success' if silent_completion(quotes) else 'natural_when_relevant',(row['batch_id'] if continuation else row['id']),resource,
@@ -246,9 +302,10 @@ def commit_plan(row, plan):
         db.execute("UPDATE phone_jobs SET state=?,result=?,updated=?,plan_lease=NULL WHERE id=?",
                    ('expanded' if ids else 'completed', 'Split into '+str(len(ids))+' independent jobs.' if ids else
                     'This is conversation; answer from the current session context. No backend task was needed.', now,row['id']))
-        if not ids:
+        if not ids or routing:
+            content=('Routing clarification only; existing task states are unchanged. Ask at the natural break: '+routing) if routing else 'No external lookup is needed for this question. Use the current conversation and supplied context.'
             db.execute('INSERT OR IGNORE INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,?,?,?,?)',
-                       (row['id'],row['actor'],'context','No external lookup is needed for this question. Use the current conversation and supplied context.',now))
+                       (row['id'],row['actor'],'context',content,now))
         db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
                    (row['id'],'decomposed','timing','dispatch','completed',int((now-row['created'])*1000),'',now))
     return ids
