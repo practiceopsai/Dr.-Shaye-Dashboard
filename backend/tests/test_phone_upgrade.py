@@ -139,3 +139,23 @@ def test_exact_media_echo_is_diagnosed_without_dropping_legitimate_repeated_word
     assert any(e[2]=='audio.echo_suspected' for e in rt.events)
     assert rt.audio_allowed({'event_id':'once'},True,20,False)
     assert not rt.audio_allowed({'event_id':'once'},True,20,False)
+
+
+def test_primary_audio_byte_clock_never_proves_transcript_playback(configured):
+    from app.phone_runtime import Runtime
+    rt=Runtime('call',phone.store())
+    assert rt.audio_allowed({},True,2000,False)
+    rt.mark('played');rt.played('played')
+    assert rt.played_end==2000
+    assert not rt.heard_fragment(0,1000)
+
+
+def test_unconfirmed_generated_words_preserved_separately_from_heard_history(configured):
+    cfg,_=configured;call=live.activate_stream(authenticated_stream(configured),cfg)
+    presence.archive(call,[{'id':'u','role':'user','text':'What do you think?'},
+        {'id':'a','role':'assistant','text':'We could shorten the meetings.','playback':'unconfirmed'}],cfg.phone_live_model)
+    with phone.store().db() as db:p=json.loads(db.execute('SELECT payload FROM phone_conversations').fetchone()[0])
+    assert len(p['turns'])==1 and p['turns'][0]['role']=='user'
+    assert p['generated_unconfirmed'][0]['playback']=='unverified'
+    context=presence.context_for(call,cfg)
+    assert 'shorten the meetings' in context['prior_generated_speech'][0]

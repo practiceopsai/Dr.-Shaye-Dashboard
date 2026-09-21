@@ -48,6 +48,10 @@ def context_for(call, cfg):
         facts['phone_work']=[dict(r) for r in db.execute('''SELECT COALESCE(d.caller_text,j.transcript) request,j.state,
             substr(j.result,1,600) verified_result,j.question FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
             WHERE j.actor=? AND j.created>? ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
+        previous=db.execute('SELECT payload FROM phone_conversations WHERE actor=? ORDER BY created DESC LIMIT 2',(call.get('actor',''),)).fetchall()
+        facts['prior_generated_speech']=[t['text'][:1200] for p in previous
+            for t in json.loads(p['payload']).get('generated_unconfirmed',[])][-8:]
+        facts['generated_speech_rule']='Earlier generated speech has unverified playback. Use only as tentative context when relevant; never assume the caller heard or agreed, and never restart it automatically.'
     if row and row['user_id'] == entry.get('user_id') and time.time()-row['updated'] < 300:
         packet = json.loads(row['packet'])
         facts.update(packet)
@@ -59,8 +63,12 @@ def context_for(call, cfg):
 def archive(call, fragments, model, delegated=()):
     """A conversation record never enters the action queue or authorizes a call."""
     turns = []
+    generated=[]
     for f in fragments:
         if f['role']=='assistant' and f.get('playback') in {'discarded','unconfirmed'}:
+            if f.get('playback')=='unconfirmed':
+                if generated and len(generated[-1]['text'])+len(f['text'])<=12000:generated[-1]['text']+=f['text']
+                else:generated.append({'text':f['text'][:12000],'playback':'unverified'})
             continue
         if not f['text'].strip() or automated_audio(f['text']):
             continue
@@ -75,7 +83,8 @@ def archive(call, fragments, model, delegated=()):
     turns = [t for t in turns if not contains_phi(t['text']) and not PRIVATE.search(t['text'])]
     if not turns:
         return
-    payload = json.dumps({'model': model, 'turns': turns}, ensure_ascii=False)
+    generated=[t for t in generated if not contains_phi(t['text']) and not PRIVATE.search(t['text'])]
+    payload = json.dumps({'model': model, 'turns': turns,'generated_unconfirmed':generated}, ensure_ascii=False)
     if len(payload)>100000:
         return
     with phone.store().db() as db:

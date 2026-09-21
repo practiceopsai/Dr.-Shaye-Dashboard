@@ -50,6 +50,7 @@ class Runtime:
         self.output_fence=False;self.output_silence_ms=0.;self.audio_spans=set()
         self.last_input_seq=0;self.last_generated='';self.last_played=''
         self.audio_events=set();self.output_fingerprints={};self.last_echo=0.
+        self.transcript_clock_aligned=True
 
     def event(self,kind,*,turn_id=None,task_id='',duration_ms=0,status='',response_id=None):
         self.sequence+=1
@@ -102,7 +103,11 @@ class Runtime:
             self.audio_spans.add(key)
             if len(self.audio_spans)>65000:raise ValueError('audio_timeline_limit')
             self.output_end=max(self.output_end,end)
-        else:self.output_end+=duration_ms
+        else:
+            # Primary Live audio has no session timestamps. Its cumulative byte
+            # duration is a playout counter, NOT the transcript's session clock.
+            self.transcript_clock_aligned=False
+            self.output_end+=duration_ms
         if self.output_fence:
             self.output_silence_ms=0 if voiced else self.output_silence_ms+duration_ms
             # Require the continuous provider to actually yield, not just the
@@ -138,4 +143,5 @@ class Runtime:
         return True
 
     def heard_fragment(self,start,end):
-        return (end<=self.played_end and not any(start<b and end>a for a,b in self.cancelled_spans))
+        return (self.transcript_clock_aligned and end<=self.played_end
+                and not any(start<b and end>a for a,b in self.cancelled_spans))
