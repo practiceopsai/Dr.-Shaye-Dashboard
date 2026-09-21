@@ -48,6 +48,11 @@ class PhoneStore:
                     call_id TEXT NOT NULL, delegation_id TEXT NOT NULL, job_id TEXT NOT NULL,
                     caller_text TEXT NOT NULL,
                     PRIMARY KEY(call_id, delegation_id));
+                CREATE TABLE IF NOT EXISTS phone_job_updates (
+                    job_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL,
+                    tool TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER NOT NULL DEFAULT 0, content TEXT NOT NULL DEFAULT '',
+                    created REAL NOT NULL, PRIMARY KEY(job_id, event_id));
             """)
 
     @contextmanager
@@ -75,14 +80,23 @@ class PhoneStore:
                 return None
             claim = secrets.token_urlsafe(24)
             db.execute("UPDATE phone_jobs SET state='claimed',claim=?,updated=? WHERE id=?", (claim, now, row['id']))
+            db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
+                       (row['id'], 'claimed', 'timing', '', 'claimed', int((now-row['created'])*1000), '', now))
             return {**dict(row), 'claim': claim, 'state': 'claimed', 'audio': None}
 
     def jobs(self, actor: str):
         with self.db() as db:
-            return [dict(r) for r in db.execute("""SELECT j.id,COALESCE(d.caller_text,j.transcript) AS transcript,
+            jobs = [dict(r) for r in db.execute("""SELECT j.id,COALESCE(d.caller_text,j.transcript) AS transcript,
                 j.state,j.created,j.updated,j.result,j.error,j.callback_requested FROM phone_jobs j
                 LEFT JOIN phone_live_delegations d ON d.job_id=j.id
                 WHERE j.actor=? ORDER BY j.created DESC LIMIT 30""", (actor,))]
+            for job in jobs:
+                job['actions'] = [dict(r) for r in db.execute("SELECT event_id,status,content FROM phone_job_updates WHERE job_id=? AND kind='action' ORDER BY created,event_id", (job['id'],))]
+            return jobs
+
+    def updates(self, job_id: str):
+        with self.db() as db:
+            return [dict(r) for r in db.execute('SELECT * FROM phone_job_updates WHERE job_id=? ORDER BY created,event_id', (job_id,))]
 
     def outbound(self, actor: str):
         with self.db() as db:

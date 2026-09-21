@@ -12,6 +12,35 @@ def normalize(value):
 
 
 def send_whatsapp(args, settings, *, session=None, home=None, sender=None):
+    return send_message(args, settings, channel='whatsapp', session=session, home=home, sender=sender)
+
+
+def send_imessage(args, settings, *, session=None, home=None, sender=None, available=None):
+    return send_message(args, settings, channel='imessage', session=session, home=home, sender=sender, available=available)
+
+
+def imessage_available(home):
+    try:
+        state = json.loads((Path(home)/'gateway_state.json').read_text())
+        return state.get('platforms',{}).get('bluebubbles',{}).get('state') == 'connected'
+    except (OSError, ValueError):
+        return False
+
+
+def imessage_sender(args):
+    # Explicit iMessage DM GUID prevents group/SMS fallback. Reuse the native
+    # transport and its outbound response guard, not a second sending service.
+    from gateway.config import Platform, load_gateway_config
+    from model_tools import _run_async
+    from tools.send_message_tool import _send_to_platform
+    cfg = load_gateway_config().platforms.get(Platform('bluebubbles'))
+    if not cfg or not cfg.enabled:
+        return {'success': False, 'error': 'iMessage is not connected'}
+    return _run_async(_send_to_platform(Platform('bluebubbles'),cfg,
+        'iMessage;-;'+args['target'].split(':',1)[1],args['message']))
+
+
+def send_message(args, settings, *, channel, session=None, home=None, sender=None, available=None):
     if session is None:
         from gateway.session_context import get_session_env
         session = get_session_env
@@ -47,7 +76,9 @@ def send_whatsapp(args, settings, *, session=None, home=None, sender=None):
         normalized = normalize(fresh)
         if (normalize(quote) not in normalized
                 or not re.search(r'(?<!\w)' + re.escape(normalize(message)) + r'(?!\w)', normalize(quote))
-                or not re.search(r'\bwhats\s*app\b', quote, re.I)
+                or (channel == 'whatsapp' and not re.search(r'\bwhats\s*app\b', quote, re.I))
+                or (channel == 'imessage' and (not re.search(r'\b(?:text|imessage)\b',quote,re.I)
+                    or re.search(r'\b(?:whats\s*app|sms|email)\b',quote,re.I)))
                 or not re.search(r'\b(send|text|message|tell)\b', quote, re.I)
                 or re.search(r"\b(?:do not|don't|dont|never)\s+(?:send|text|message)|\bcancel\b", fresh, re.I)):
             return {'success': False, 'error': 'The current caller must explicitly request this exact message. Earlier assistant speech is not approval.'}
@@ -56,7 +87,7 @@ def send_whatsapp(args, settings, *, session=None, home=None, sender=None):
         named = any(re.search(r'\b' + re.escape(name) + r'\b', quote, re.I) for name in names)
         if not named and recipient.lstrip('+') not in re.sub(r'\D', '', quote):
             return {'success': False, 'error': 'Ask the caller to name the authorized contact or repeat the exact recipient number.'}
-        digest = hashlib.sha256((request_id+'\0whatsapp\0'+recipient+'\0'+message).encode()).hexdigest()
+        digest = hashlib.sha256((request_id+'\0'+channel+'\0'+recipient+'\0'+message).encode()).hexdigest()
         db.execute('CREATE TABLE IF NOT EXISTS message_receipts(id TEXT PRIMARY KEY,request_id TEXT,recipient TEXT,message TEXT,approval_quote TEXT,state TEXT,receipt TEXT,created REAL,updated REAL)')
         db.commit()
         db.execute('BEGIN IMMEDIATE')
@@ -66,14 +97,21 @@ def send_whatsapp(args, settings, *, session=None, home=None, sender=None):
             if old[0] == 'sent':
                 return {**json.loads(old[1]), 'already_sent_for_this_request': True}
             return {'success': False, 'state': old[0], 'error': 'This exact attempt needs reconciliation; do not resend automatically.'}
+        if channel == 'imessage' and not (available(home) if available else imessage_available(home)):
+            db.rollback()
+            return {'success': False, 'state': 'unavailable', 'pending': True,
+                    'error': 'iMessage is disconnected. The request remains in the phone task history, but nothing was sent. Reconnect iMessage and explicitly resume this request; do not substitute WhatsApp or SMS.'}
         db.execute('INSERT INTO message_receipts VALUES (?,?,?,?,?,?,?,?,?)',
                    (digest, request_id, recipient, message, quote, 'sending', '{}', time.time(), time.time()))
         db.commit()
         try:
             if sender is None:
-                from tools.send_message_tool import send_message_tool
-                sender = send_message_tool
-            result = sender({'action': 'send', 'target': 'whatsapp:'+recipient, 'message': message})
+                if channel == 'imessage':
+                    sender = imessage_sender
+                else:
+                    from tools.send_message_tool import send_message_tool
+                    sender = send_message_tool
+            result = sender({'action': 'send', 'target': channel+':'+recipient, 'message': message})
             if isinstance(result, str):
                 result = json.loads(result)
             if not isinstance(result, dict):

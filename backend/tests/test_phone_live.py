@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import time
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import pytest
@@ -221,3 +222,59 @@ def test_long_results_are_not_spoken_before_complete_context(configured):
     assert not any(e['type'] == 'session.commentary.append' for e in model.sent)
     assert model.sent[-1]['type'] == 'session.instructions.append'
     assert 'pending approvals' in model.sent[-1]['content']
+
+
+def test_progress_claim_auth_deduplication_and_patient_boundary(configured):
+    cfg,client=configured
+    call=live.activate_stream(authenticated_stream(configured),cfg)
+    job_id=live.enqueue(call,'progress-test','Check email.','Check email.')
+    headers={'Authorization':'Bearer '+cfg.phone_bridge_token}
+    job=client.post('/internal/phone/claim',headers=headers).json()['job']
+    event={'event_id':'native-1','kind':'action','tool':'email_send','status':'sent','content':'Email send confirmed.'}
+    path='/internal/phone/jobs/'+job_id+'/progress'
+    assert client.post(path,headers=headers,json={'claim':'x'*24,'events':[event]}).status_code==403
+    for _ in range(2):assert client.post(path,headers=headers,json={'claim':job['claim'],'events':[event]}).status_code==200
+    assert len([e for e in phone.store().updates(job_id) if e['event_id']=='native-1'])==1
+    event['event_id']='native-2';event['content']='Patient Jane Doe MRN: 12345'
+    assert client.post(path,headers=headers,json={'claim':job['claim'],'events':[event]}).status_code==400
+    assert not any(e['event_id']=='native-2' for e in phone.store().updates(job_id))
+
+
+def test_spoken_progress_receipt_and_completion_after_old_90_second_cutoff(configured,monkeypatch):
+    cfg,_=configured
+    call=live.activate_stream(authenticated_stream(configured),cfg)
+    job_id=live.enqueue(call,'slow-test','Complete approved task.','Complete approved task.')
+    clock=SimpleNamespace(now=10.)
+    model=FakeModel();call=live.LiveCall(None,model,cfg,call,STREAM)
+    monkeypatch.setattr(live,'time',SimpleNamespace(monotonic=lambda:clock.now,time=time.time))
+    real_sleep=asyncio.sleep
+    async def advance(seconds):
+        clock.now+=seconds
+        with phone.store().db() as db:
+            if clock.now>=20:
+                db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
+                    (job_id,'native-receipt','action','email_send','sent',100,'The email send is confirmed.',time.time()))
+            if clock.now>=106:
+                db.execute("UPDATE phone_jobs SET state='completed',result='The task is complete.' WHERE id=?",(job_id,))
+        await real_sleep(0)
+    monkeypatch.setattr(live.asyncio,'sleep',advance)
+    asyncio.run(call.wait_for_result('slow-test',job_id))
+    spoken=[e['content'] for e in model.sent if e['type']=='session.commentary.append']
+    assert any('waiting behind' in s for s in spoken)
+    assert spoken.count('The email send is confirmed.')==1
+    assert 'The task is complete.' in spoken[-1]
+    assert clock.now>=106
+    assert len(spoken)<10
+
+
+def test_hangup_cancels_result_wait_without_cancelling_work(configured):
+    cfg,_=configured
+    call=live.activate_stream(authenticated_stream(configured),cfg)
+    job_id=live.enqueue(call,'hangup-test','Prepare draft.','Prepare draft.')
+    model=FakeModel();live_call=live.LiveCall(None,model,cfg,call,STREAM)
+    async def check():
+        task=asyncio.create_task(live_call.wait_for_result('hangup-test',job_id))
+        await asyncio.sleep(.01);task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task
+    asyncio.run(check())
+    assert phone.store().jobs(call['actor'])[0]['state']=='queued'

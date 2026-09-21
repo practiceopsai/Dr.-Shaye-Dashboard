@@ -460,6 +460,35 @@ class JobUpdate(BaseModel):
     error: str = Field(default='', max_length=500)
 
 
+class ProgressEvent(BaseModel):
+    event_id: str = Field(min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9_.:-]+$')
+    kind: str = Field(pattern=r'^(progress|action|timing)$')
+    tool: str = Field(default='', max_length=120, pattern=r'^[a-zA-Z0-9_-]*$')
+    status: str = Field(default='', max_length=30, pattern=r'^[a-zA-Z0-9_-]*$')
+    duration_ms: int = Field(default=0, ge=0, le=86400000)
+    content: str = Field(default='', max_length=500)
+
+
+class JobProgress(BaseModel):
+    claim: str = Field(min_length=20, max_length=100)
+    events: list[ProgressEvent] = Field(max_length=30)
+
+
+@router.post('/internal/phone/jobs/{job_id}/progress', dependencies=[Depends(bridge_auth)])
+def job_progress(job_id: str, update: JobProgress):
+    with store().db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT claim FROM phone_jobs WHERE id=?', (job_id,)).fetchone()
+        if not row or not hmac.compare_digest(row['claim'] or '', update.claim):
+            raise HTTPException(403)
+        for event in update.events:
+            if contains_phi(event.content):
+                raise HTTPException(400, 'Progress must not contain patient information')
+            db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
+                       (job_id,event.event_id,event.kind,event.tool,event.status,event.duration_ms,event.content,time.time()))
+    return {'status': 'recorded'}
+
+
 @router.post('/internal/phone/jobs/{job_id}', dependencies=[Depends(bridge_auth)])
 def update_job(job_id: str, update: JobUpdate):
     if update.state not in {'running','completed','failed','uncertain'}:
@@ -479,6 +508,8 @@ def update_job(job_id: str, update: JobUpdate):
             raise HTTPException(400, 'An empty response is not completion')
         db.execute('UPDATE phone_jobs SET state=?,result=?,error=?,updated=? WHERE id=?',
                    (update.state, update.result, update.error, time.time(), job_id))
+        db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
+                   (job_id,update.state,'timing','',update.state,int((time.time()-row['created'])*1000),'',time.time()))
     return {'status': update.state}
 
 

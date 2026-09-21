@@ -16,4 +16,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Verify caller approval and delivery receipts
-        run: python -m unittest discover -s integrations/hermes_phone -p test_messaging.py -v
+        run: python -m unittest discover -s integrations/hermes_phone -p "test_*.py" -v

@@ -14,6 +14,8 @@ import urllib.request
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.response_policy import user_turn, validate_text
+from . import performance
+from .operations import SCHEMAS, latest_email, send_email
 
 log = logging.getLogger('eli.phone')
 _settings = {}
@@ -31,6 +33,10 @@ PHONE_TOOL_GUIDANCE = (
     'Only report a send when a receipt belongs to this request and its exact payload, or a source-system '
     'record proves this same request already sent it. A completed phone turn is not proof an action succeeded. '
     'Use these known tools directly; avoid repeating skill catalogs and tool discovery already in this session.'
+    ' Unqualified text means iMessage. Use eli_phone_send_imessage, never WhatsApp unless explicitly named. '
+    'Use eli_phone_latest_email(mailbox="eli") only for Eli\'s own inbox, and eli_phone_send_email for a '
+    'single dictated email. These tools combine execution, verification and one-time tracking. '
+    'When a connection is unavailable, return that blocker promptly; do not hunt for another transport.'
 )
 
 
@@ -95,6 +101,7 @@ class PhoneAdapter(BasePlatformAdapter):
         super().__init__(config,Platform('eli_phone'))
         from hermes_constants import get_hermes_home
         self.journal=Journal(Path(get_hermes_home())/'state/eli-phone.sqlite3')
+        self.performance=performance.Performance(self.journal.path)
         self.loop_task=None
         self.running={}
 
@@ -126,6 +133,24 @@ class PhoneAdapter(BasePlatformAdapter):
         return {'name':'Private Eli phone conversation','type':'dm'}
 
     async def flush(self):
+        # Transport only stored progress/receipts. Retries never execute tools.
+        rows=self.performance.pending()
+        grouped={}
+        for row in rows:
+            grouped.setdefault(row['job_id'],[]).append(row)
+        for identifier,events in grouped.items():
+            with self.journal.db() as db:
+                found=db.execute('SELECT payload FROM work WHERE id=?',(identifier,)).fetchone()
+            if not found:
+                continue
+            job=json.loads(found[0])
+            payload=[{'event_id':'native-'+str(e['id']),**{k:e[k] for k in ('kind','tool','status','duration_ms','content')}} for e in events]
+            try:
+                await asyncio.to_thread(api_request,'/internal/phone/jobs/'+identifier+'/progress',{'claim':job['claim'],'events':payload})
+                self.performance.delivered([e['id'] for e in events])
+            except Exception:
+                # Older backend / transient outage cannot prevent final delivery.
+                break
         for identifier,payload,state,result,error in self.journal.pending_delivery():
             job=json.loads(payload)
             try:
@@ -150,7 +175,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 raise
             except Exception as exc:
                 log.warning('Phone bridge check failed: %s',type(exc).__name__)
-            await asyncio.sleep(2)
+            await asyncio.sleep(.5 if self.running else 1)
 
     @user_turn
     async def agent_turn(self,event):
@@ -160,6 +185,7 @@ class PhoneAdapter(BasePlatformAdapter):
         return answer
 
     async def process(self,job):
+        began=time.monotonic()
         try:
             identity=configuration().get('identities',{}).get(job['actor'])
             if not identity or identity!=job.get('identity'):
@@ -172,6 +198,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 raise RuntimeError('Gateway is not ready')
             await asyncio.to_thread(api_request,'/internal/phone/jobs/'+job['id'],{'claim':job['claim'],'state':'running'})
             self.journal.update(job['id'],'running')
+            self.performance.record(job['id'],'timing',status='native_started')
             source=self.build_source(chat_id=chat_id,chat_name='Eli phone',chat_type='dm',
                 user_id=user_id,user_name=identity['name'],message_id=job['id'])
             event=MessageEvent(text=job['transcript'],message_type=MessageType.TEXT,source=source,
@@ -179,13 +206,16 @@ class PhoneAdapter(BasePlatformAdapter):
             # This is the gateway's full authorized message pipeline, including
             # current model routing, SOUL, persona/rank hooks, memory and tools.
             answer=await self.agent_turn(event)
+            answer=performance.verified_answer(self.performance,job,answer)
             self.journal.update(job['id'],'completed',answer[:20000])
+            self.performance.record(job['id'],'timing','native_turn','completed',int((time.monotonic()-began)*1000))
         except asyncio.CancelledError:
             self.journal.update(job['id'],'uncertain',error='Request interrupted; reconcile existing actions before repeating it.')
             raise
         except Exception as exc:
             log.warning('Phone request needs review: %s',type(exc).__name__)
             self.journal.update(job['id'],'failed',error='A final reply could not be confirmed. Please review the existing work before repeating this request.')
+            self.performance.record(job['id'],'timing','native_turn','failed',int((time.monotonic()-began)*1000))
         await self.flush()
 
 
@@ -228,11 +258,19 @@ def register(ctx):
         validate_config=lambda cfg:bool(os.environ.get('ELI_PHONE_BRIDGE_TOKEN') and configuration().get('backend_url')),
         allowed_users_env='ELI_PHONE_ALLOWED_USERS',allow_update_command=False,pii_safe=True,
         platform_hint='This is a private authenticated phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. Private callback updates require the caller phone access code. '+PHONE_TOOL_GUIDANCE)
-    from .messaging import send_whatsapp
-    ctx.register_tool(name='eli_phone_send_whatsapp',toolset='eli_phone',
-        handler=lambda args,**kwargs:json.dumps(send_whatsapp(args,configuration())),
-        schema={'name':'eli_phone_send_whatsapp','description':'Send the exact WhatsApp text explicitly requested by the currently authenticated phone caller. Supply a verbatim quote from the current caller requesting this recipient and message. No patient information or attachments. Returns a durable request-specific receipt; never resend an uncertain attempt.',
-                'parameters':{'type':'object','properties':{'recipient':{'type':'string','description':'Exact E.164 recipient number; named contacts must match the configured phone identities.'},'message':{'type':'string','description':'Exact text stated and approved by the caller.'},'approval_quote':{'type':'string','description':'Verbatim current caller instruction to send this message to this contact.'}},'required':['recipient','message','approval_quote']}})
+    from .messaging import send_whatsapp, send_imessage
+    handlers={'eli_phone_send_whatsapp':send_whatsapp,'eli_phone_send_imessage':send_imessage,
+              'eli_phone_latest_email':latest_email,'eli_phone_send_email':send_email}
+    for schema in SCHEMAS:
+        handler=handlers[schema['name']]
+        ctx.register_tool(name=schema['name'],toolset='eli_phone',schema=schema,
+            handler=lambda args,_fn=handler,**kwargs:json.dumps(_fn(args,configuration())))
+    ctx.register_hook('pre_llm_call',lambda **kw:performance.context(configuration(),SCHEMAS,**kw))
+    ctx.register_hook('pre_tool_call',lambda **kw:performance.before_tool(configuration(),**kw))
+    ctx.register_hook('post_tool_call',lambda **kw:performance.after_tool(configuration(),**kw))
+    ctx.register_hook('post_api_request',lambda **kw:performance.model_timing(configuration(),**kw))
+    ctx.register_hook('api_request_error',lambda **kw:performance.model_timing(configuration(),failed=True,**kw))
+    ctx.register_hook('transform_llm_output',lambda **kw:performance.transform_answer(configuration(),**kw))
     ctx.register_tool(name='eli_phone_propose_call',toolset='eli_phone',handler=propose_outbound,
         schema={'name':'eli_phone_propose_call','description':'Draft a phone call for explicit approval. Does not place a call. The approved exact message is spoken with AI disclosure; any reply is saved for review. Never put patient data or secrets in a call.',
                 'parameters':{'type':'object','properties':{'recipient':{'type':'string','description':'Exact E.164 number'},'message':{'type':'string','description':'Exact message to be spoken after AI disclosure'},'purpose':{'type':'string'}},'required':['recipient','message','purpose']}})

@@ -10,6 +10,13 @@ const access={phone:"+12025550101",eli_number:"+12025550100",pin_configured:fals
 beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();sessionStorage.setItem(GOOGLE_CREDENTIAL_KEY,"initial");vi.mocked(api.me).mockResolvedValue(owner);vi.mocked(api.phone).mockResolvedValue(access);});
 
 describe("private phone setup",()=>{
+  it("separates a completed response from a blocked message",async()=>{
+    vi.mocked(api.phone).mockResolvedValue({...access,jobs:[{id:"job-one",transcript:"Text Fabio hello",state:"completed",created:1,result:"iMessage needs reconnection.",error:"",callback_requested:0,actions:[{event_id:"receipt-one",status:"failed",content:"The iMessage send is not confirmed."}]}]});
+    render(<PhonePage/>);
+    expect(await screen.findByText("Response ready")).toBeInTheDocument();
+    expect(screen.getByText("The iMessage send is not confirmed.")).toBeInTheDocument();
+    expect(screen.queryByText("completed")).not.toBeInTheDocument();
+  });
   it("copies the signed-in user's full private webhook and removes it on sign-out",async()=>{
     const webhook="https://phone.example/api/phone/incoming?scope=entry&token=private-test-token";
     const writeText=vi.fn().mockResolvedValue(undefined);

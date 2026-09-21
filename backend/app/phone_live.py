@@ -40,6 +40,11 @@ a time. Give the answer first. Do not read menus, markdown, or internal diagnost
 
 Backchannel policy: Use moderate, brief listening acknowledgments without talking
 over the caller's main point. Avoid repetitive 'I've saved your request' announcements.
+For a lookup or action, acknowledge naturally as soon as the caller finishes. Keep
+listening while it runs. Speak brief backend progress when supplied; do not invent
+progress, ask the caller to wait in silence, or imply a send before its receipt.
+An unqualified text means iMessage. Only use WhatsApp when explicitly requested.
+If iMessage is disconnected, state that clearly; never switch channels silently.
 
 Interruption policy: Yield when the caller interrupts and listen to the correction.
 An interruption stops speech, not backend work. Delegate changed or canceled tasks.
@@ -324,25 +329,7 @@ class LiveCall:
                 job_id = enqueue(self.call, identifier, transcript, caller_text)
                 self.last_job = job_id
                 self.conversation.consumed.update(consumed)
-            await self.append('thinking', 'The request is saved in the existing Eli system and is being processed. '
-                              'No external action is confirmed yet. Remain available for conversation.', identifier)
-            started = time.monotonic()
-            while True:
-                with phone.store().db() as db:
-                    job = db.execute('SELECT state,result FROM phone_jobs WHERE id=? AND actor=?',
-                                     (job_id, self.call['actor'])).fetchone()
-                if job['state'] == 'completed':
-                    await self.append('commentary', 'Verified response from the existing Eli system: ' + job['result'], identifier)
-                    return
-                if job['state'] in {'failed', 'uncertain'}:
-                    await self.append('commentary', 'I could not confirm the outcome of that request. The existing work needs review '
-                                      'in the command center before it is repeated.', identifier)
-                    return
-                if time.monotonic() - started > 90:
-                    await self.append('commentary', 'That request is taking longer. It remains saved and will continue after this call; '
-                                      'the result will appear in the command center.', identifier)
-                    return
-                await asyncio.sleep(.3)
+            await self.wait_for_result(identifier, job_id)
         except asyncio.CancelledError:
             # Only stop polling/audio. The durable native job remains untouched.
             raise
@@ -351,6 +338,47 @@ class LiveCall:
                               'or try a short request without patient information.', identifier)
         except Exception:
             log.warning('Live phone delegation delivery interrupted; existing work retained')
+
+    async def wait_for_result(self, identifier, job_id):
+        # Progress is separate from execution. Never restart a tool because the
+        # caller interrupts, a status update fails, or a task takes >90 seconds.
+        await self.append('instructions', 'The request is accepted. If you have not already acknowledged it, '
+                          'briefly tell the caller you are on it, then remain available. Nothing is confirmed sent yet.', identifier)
+        started = time.monotonic()
+        next_progress = started + 6
+        seen = set()
+        stage = ''
+        while True:
+                with phone.store().db() as db:
+                    job = db.execute('SELECT state,result FROM phone_jobs WHERE id=? AND actor=?',
+                                     (job_id, self.call['actor'])).fetchone()
+                if not job:
+                    raise ValueError('missing_job')
+                for event in phone.store().updates(job_id):
+                    if event['event_id'] in seen:
+                        continue
+                    seen.add(event['event_id'])
+                    if event['kind'] == 'action' and event['content']:
+                        await self.append('commentary', event['content'], identifier)
+                        next_progress = time.monotonic() + 15
+                    elif event['kind'] == 'progress' and event['content']:
+                        stage = event['content']
+                if job['state'] == 'completed':
+                    await self.append('commentary', 'Verified response from the existing Eli system: ' + job['result'], identifier)
+                    return
+                if job['state'] in {'failed', 'uncertain'}:
+                    await self.append('commentary', 'I could not confirm the outcome of that request. The existing work needs review '
+                                      'in the command center before it is repeated.', identifier)
+                    return
+                now = time.monotonic()
+                if now >= next_progress and now - max(self.last_speech, self.conversation.last_input) >= .8:
+                    content = ("Your earlier request is still running; this one is waiting behind it. I'm still here."
+                               if job['state'] == 'queued' else stage or "I'm still working on that request. I don't have a confirmed result yet.")
+                    if now - started >= 30:
+                        content += ' You can keep talking; I will let you know when the result arrives.'
+                    await self.append('commentary', content, identifier)
+                    next_progress = now + (30 if now - started >= 30 else 12)
+                await asyncio.sleep(.3)
 
     async def run(self):
         receiver = asyncio.create_task(self.receive_model())
