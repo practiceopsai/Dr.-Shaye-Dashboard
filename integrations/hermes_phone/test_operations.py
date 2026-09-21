@@ -20,6 +20,15 @@ messaging = sys.modules['phone_unit.messaging']
 
 
 class OperationsTests(unittest.TestCase):
+    def test_mail_uses_loaded_plugin_instance_instead_of_directory_import(self):
+        registry_module=ModuleType('tools.registry')
+        factory=Mock(return_value='existing-service')
+        handler=SimpleNamespace(__globals__={'services':factory})
+        registry_module.registry=SimpleNamespace(get_entry=lambda name:SimpleNamespace(handler=handler))
+        with patch.dict(sys.modules,{'tools.registry':registry_module}):
+            self.assertEqual(operations.mail_services(),'existing-service')
+        factory.assert_called_once()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.home=Path(self.temp.name);(self.home/'state').mkdir()

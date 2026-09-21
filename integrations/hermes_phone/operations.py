@@ -18,8 +18,14 @@ def native_call(name, args):
 
 
 def mail_services():
-    from email_identity.tools import services
-    return services()
+    # Plugins are loaded under a managed namespace, not their directory name.
+    # Reuse the registered instance (including its connection pool/config).
+    from tools.registry import registry
+    entry = registry.get_entry('email_list_threads')
+    factory = getattr(entry.handler, '__globals__', {}).get('services') if entry else None
+    if not callable(factory):
+        raise RuntimeError('The native email identity is not loaded')
+    return factory()
 
 
 def latest_email(args, settings, *, home=None, session=None, services=None):
