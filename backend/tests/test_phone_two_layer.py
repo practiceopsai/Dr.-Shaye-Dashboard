@@ -9,7 +9,7 @@ from test_phone import setup
 from test_phone_live import configured, authenticated_stream, FakeModel, fragment, STREAM
 
 
-def intake(configured, text='Text Fabio hello and email Fabio hello.'):
+def intake(configured, text='Text Owner hello and email Owner hello.'):
     cfg,_=configured
     call=live.activate_stream(authenticated_stream(configured),cfg)
     identifier=live.enqueue(call,'compound','New caller speech: '+text,text,origin_turn_id='one',intake=True)
@@ -20,8 +20,8 @@ def intake(configured, text='Text Fabio hello and email Fabio hello.'):
 
 def pair():
     return {'conversation_only':False,'jobs':[
-        {'scope':'Text Fabio hello','quotes':['Text Fabio hello'],'kind':'imessage','after':[]},
-        {'scope':'Email Fabio hello','quotes':['email Fabio hello.'],'kind':'email','after':[]}]}
+        {'scope':'Text Owner hello','quotes':['Text Owner hello'],'kind':'imessage','after':[],'recipient':'Owner','message':'hello'},
+        {'scope':'Email Owner hello','quotes':['email Owner hello.'],'kind':'email','after':[],'recipient':'Owner','message':'hello'}]}
 
 
 def test_compound_is_atomic_parallel_and_cannot_replay_after_hangup(configured):
@@ -39,7 +39,7 @@ def test_compound_is_atomic_parallel_and_cannot_replay_after_hangup(configured):
     with phone.store().db() as db:
         db.execute("UPDATE phone_jobs SET state='completed' WHERE id IN (?,?)",ids)
     assert phone.store().claim() is None
-    assert 'email Fabio' not in a['transcript'].split('New caller speech: ')[-1]
+    assert 'email Owner' not in a['transcript'].split('New caller speech: ')[-1]
 
 
 def test_dependencies_and_conflicts_hold_only_related_work(configured):

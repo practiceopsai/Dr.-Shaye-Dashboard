@@ -164,10 +164,11 @@ class PhoneStore:
                 job['actions'] = [dict(r) for r in db.execute("SELECT event_id,status,content FROM phone_job_updates WHERE job_id=? AND kind='action' ORDER BY created,event_id", (job['id'],))]
         return jobs
 
-    def questions(self, actor):
+    def questions(self, actor, call_id=None):
         with self.db() as db:
-            return [dict(r) for r in db.execute("""SELECT id,question,root_id FROM phone_jobs
-                WHERE actor=? AND state='waiting_for_input' ORDER BY created LIMIT 32""", (actor,))]
+            return [dict(r) for r in db.execute("""SELECT id,question,root_id,call_id FROM phone_jobs
+                WHERE actor=? AND state='waiting_for_input' AND (? IS NULL OR call_id=?)
+                ORDER BY created LIMIT 32""", (actor,call_id,call_id))]
 
     def notices(self, actor, call_id='', *, current_only=False):
         with self.db() as db:

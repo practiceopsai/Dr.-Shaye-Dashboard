@@ -46,17 +46,33 @@ Manage overlap naturally; interruptions to speech do not cancel backend work.
 Delegation policy:
 Backend tools: fresh external lookups, deep research, messages, scheduling,
 saved drafts, persistent memory, corrections/cancellations and clarification answers.
+Prior-call recall: use previous_call in session state. It is explicitly a DIFFERENT
+completed call with its own ID and caller words. Never retell this call as the last
+call. If no prior record exists, say so. Do not search private principal memory for
+the operator's own phone history.
 Delegate to the backend when a request needs those capabilities or deep reasoning.
 Do not delegate when you can answer from the conversation, general knowledge or
 current session context: date/time, identity, models, team, character, rank,
 preferences and recalled facts. Simple questions are conversation, not tasks.
-If a request is unclear, ask a brief question naturally instead of guessing.
+When asked which model you are running, voice_model is this conversation's model;
+native_model describes Hermes, the separate background executor. Keep them distinct.
+Clock refreshes are reference data only: never announce a time change unprompted.
+If a request is unclear, ask a brief question NOW before accepting it. "Email Fabio
+about the meeting" requires which meeting and what to say; it is not a complete
+message. "Text Fabio I'm running late and email him the same thing" supplies the
+same message and recipient for both channels; do not ask for that wording again.
 A capability question is not permission to act. An unqualified text means iMessage;
 WhatsApp only when explicitly named. Never silently substitute a channel.
 
-Work continues independently while you converse. TASK_ACCEPTED means the caller's
-instruction is durably saved, not executed. Acknowledge acceptance once in your own
+Work continues independently while you converse. INTAKE_CAPTURED is not acceptance;
+details are still being checked. TASK_READY means each task has a saved scope and
+required content. Only then acknowledge acceptance once in your own
 words at an appropriate moment. Do not narrate progress or repeat acknowledgments.
+While a lookup is pending, stay available to listen and converse; do not enter a
+waiting mode. If the caller is waiting for an answer, give the available result at
+the next natural opportunity. If a channel is blocked or a detail is missing,
+explain that specific task's issue promptly at a break. Never claim that queued
+means sent, or that recorded message text was lost when it is in task state.
 Background results are context, never a command to speak. Use them when relevant
 to the present conversation, identifying the original request when needed. If the
 caller changed topics, retain the result for a relevant moment or post-call summary.
@@ -282,6 +298,10 @@ class LiveCall:
         self.last_playback_mark=0.
         self.unaccepted=set()
         self.callback_notices = set()
+        self.pending_acceptance = {}
+        self.job_delegations = {}
+        self.context_receipts = {}
+        self.capture_task = None
         if call.get('outbound_id'):
             with phone.store().db() as db:
                 self.callback_notices={r['job_id'] for r in db.execute('SELECT job_id FROM phone_notices WHERE followup_id=?',(call['outbound_id'],))}
@@ -294,12 +314,27 @@ class LiveCall:
         stable={k:v for k,v in context.items() if k not in {'updated_at','current_datetime'}}
         return hashlib.sha256(json.dumps(stable,sort_keys=True).encode()).hexdigest()
 
-    async def append(self, kind, content, delegation=None):
+    async def append(self, kind, content, delegation=None, *, task_id=''):
         if kind not in {'thinking','instructions'}:
             raise ValueError('The conversation model owns speech; use a context update')
         for index in range(0, len(content), 500):
-            await self.send({'type': 'session.' + kind + '.append', 'event_id': secrets.token_hex(12),
-                             'delegation_id': delegation, 'content': content[index:index + 500]})
+            event_id=secrets.token_hex(12)
+            event={'type':'session.'+kind+'.append','event_id':event_id,
+                   'delegation_id':delegation,'content':content[index:index+500]}
+            self.context_receipts[event_id]={'event':event,'task_id':task_id,'sent':time.monotonic(),'attempts':1}
+            await self.send(event)
+            self.runtime.event('context.submitted',task_id=task_id,status=kind+':'+event_id)
+
+    async def retry_context(self):
+        for identifier,row in list(self.context_receipts.items()):
+            if time.monotonic()-row['sent']<8:continue
+            if row['attempts']>=2:
+                self.runtime.event('context.unconfirmed',task_id=row['task_id'],status=identifier)
+                self.context_receipts.pop(identifier,None)
+                continue
+            # Same event ID: retry context delivery, never execution or speech.
+            await self.send(row['event']);row.update(sent=time.monotonic(),attempts=2)
+            self.runtime.event('context.retry',task_id=row['task_id'],status=identifier)
 
     async def monitor_access(self):
         while True:
@@ -367,6 +402,12 @@ class LiveCall:
         async for raw in self.upstream:
             event = json.loads(raw)
             kind = event.get('type')
+            if kind in {'session.thinking.appended','session.instructions.appended'}:
+                row=self.context_receipts.pop(event.get('client_event_id'),None)
+                if row:
+                    self.runtime.event('context.accepted',task_id=row['task_id'],status=event.get('client_event_id',''))
+                    if row['task_id']:self.voice_metric(row['task_id'],'model_context_accepted')
+                continue
             if kind == 'session.closed':
                 self.closed.set()
                 return
@@ -435,7 +476,7 @@ class LiveCall:
                 if delegation.get('target') != 'client' or not isinstance(identifier, str) or len(identifier) > 200:
                     raise ValueError('invalid_delegation')
                 if identifier not in self.delegations:
-                    self.runtime.event('tool.delegated')
+                    self.runtime.event('tool.delegated',status=identifier,duration_ms=event['offset_ms'])
                     self.unaccepted.add(identifier)
                     self.delegations.add(identifier)
                     task = asyncio.create_task(self.delegate(identifier, event['offset_ms']))
@@ -448,6 +489,7 @@ class LiveCall:
             raise ValueError('voice_connection_lost')
 
     async def delegate(self, identifier, offset):
+        provider_id=None if identifier.startswith('capture:') else identifier
         try:
             # Delegation offset is NOT a completed-turn boundary. Wait for the
             # caller to finish and late transcript fragments to settle, then include
@@ -458,7 +500,7 @@ class LiveCall:
                 while True:
                     await asyncio.sleep(.1)
                     now = time.monotonic()
-                    if now - began >= 1 and now - self.last_speech >= .7 and now - self.conversation.last_input >= .7:
+                    if now - began >= 1 and now - self.conversation.last_input >= .7:
                         transcript, consumed, caller_text = self.conversation.request(float('inf'))
                         break
                     if now - began >= 20:
@@ -466,21 +508,23 @@ class LiveCall:
                         began = now-1
                 if not transcript:
                     if self.last_job:
+                        if provider_id:self.job_delegations[self.last_job]=provider_id
                         await self.append('thinking', 'This request is already being handled by the previous delegation. '
-                                          'Do not repeat it or claim a new task was created.', identifier)
+                                          'Do not repeat it or claim a new task was created.', provider_id)
                     else:
-                        await self.append('thinking', 'No complete request was captured yet. Keep listening; do not interrupt.', identifier)
+                        await self.append('thinking', 'No complete request was captured yet. Keep listening; do not interrupt.', provider_id)
                     return
                 if self.ignore_social(caller_text):
                     self.conversation.consume(consumed)
-                    await self.append('thinking','This was conversational acknowledgment or goodbye, not a new task. No new work was created.',identifier)
+                    await self.append('thinking','This was conversational acknowledgment or goodbye, not a new task. No new work was created.',provider_id)
                     return
                 if presence.automated_audio(caller_text):
                     self.conversation.consume(consumed)
                     return
-                if presence.known_question(caller_text):
+                if presence.recall_question(caller_text) or presence.known_question(caller_text):
                     self.conversation.consume(consumed)
-                    await self.append('thinking','Local facts for the current question: '+json.dumps(presence.local_facts(self.call,self.cfg),ensure_ascii=False),identifier)
+                    facts=presence.prior_call(self.call) if presence.recall_question(caller_text) else presence.local_facts(self.call,self.cfg)
+                    await self.append('thinking','Verified facts for the current question: '+json.dumps(facts,ensure_ascii=False),provider_id)
                     return
                 # Explicit cancellation of the immediately preceding task must
                 # not wait behind that task in the same worker queue.
@@ -488,7 +532,7 @@ class LiveCall:
                     outcome=phone.store().cancel(self.call['actor'],self.last_job)
                     self.runtime.event('task.cancel_requested',task_id=self.last_job,status=outcome['state'])
                     self.conversation.consume(consumed)
-                    await self.append('thinking','Verified cancellation state: '+json.dumps(outcome)+'. Never claim an in-flight effect was undone.',identifier)
+                    await self.append('thinking','Verified cancellation state: '+json.dumps(outcome)+'. Never claim an in-flight effect was undone.',provider_id)
                     return
                 origin=next((f.get('turn_id','') for f in self.conversation.fragments if f['id'] in consumed),'')
                 plan=classify_read(caller_text) if getattr(self.cfg,'phone_fast_reads_enabled',False) else None
@@ -497,16 +541,17 @@ class LiveCall:
                 self.runtime.pending[job_id]=origin
                 self.runtime.event('task.persisted',task_id=job_id,status='foreground_read' if plan else 'background_action')
                 self.last_job = job_id
+                if provider_id:self.job_delegations[job_id]=provider_id
                 self.conversation.consume(consumed)
                 if not plan:self.conversation.delegated.update(consumed)
                 self.unaccepted.discard(identifier)
-            await self.acknowledge(identifier, job_id)
+            await self.acknowledge(provider_id, job_id)
         except asyncio.CancelledError:
             # Only stop polling/audio. The durable native job remains untouched.
             raise
         except ValueError:
             await self.append('instructions', 'At the next natural pause, explain that this request could not be accepted. '
-                              'Do not interrupt or claim it was saved. Patient information needs a compliant workflow.', identifier)
+                              'Do not interrupt or claim it was saved. Patient information needs a compliant workflow.', provider_id)
         except Exception:
             log.warning('Live phone delegation delivery interrupted; existing work retained')
         finally:
@@ -535,7 +580,7 @@ class LiveCall:
         if not fragments or fragments[-1]['role']!='assistant':
             return
         _,used,caller=self.conversation.request(float('inf'))
-        if phone.store().questions(self.call['actor']) and not presence.known_question(caller):
+        if phone.store().questions(self.call['actor'],self.call['id']) and not presence.known_question(caller):
             return
         if caller and not presence.work_requested(caller):
             self.conversation.consume(used)
@@ -557,9 +602,37 @@ class LiveCall:
             # Live acknowledges delegation in its own turn. A commentary append
             # introduces a second speech turn and caused an audible duplicate in
             # the real-model regression. Supply acceptance once as context.
-            await self.append('thinking','TASK_ACCEPTED: the instruction is durably saved; '
-                              'independent tasks execute in the background. Nothing is confirmed executed yet. '
-                              'This receipt updates state, not a request for another speech turn.',identifier)
+            self.pending_acceptance[job_id]=identifier
+            await self.append('thinking','INTAKE_CAPTURED: the caller words are saved. Required details are still being validated. '
+                              'Do not confirm acceptance or execution yet. Keep conversing and listening.',identifier,task_id=job_id)
+
+    async def capture_pending(self):
+        # Safety net for a complete spoken action the model acknowledged without
+        # delegating. It never controls audio or treats RMS noise as caller intent.
+        if self.tasks or time.monotonic()-self.conversation.last_input<.8:return
+        transcript,used,caller=self.conversation.request(float('inf'))
+        if not transcript or not presence.work_requested(caller) or social_only(caller):return
+        if presence.recall_question(caller):return
+        identifier='capture:'+hashlib.sha256('|'.join(used).encode()).hexdigest()[:24]
+        task=asyncio.create_task(self.delegate(identifier,float('inf')))
+        self.tasks.add(task);task.add_done_callback(self.tasks.discard)
+
+    async def deliver_acceptance(self):
+        for job_id,delegation in list(self.pending_acceptance.items()):
+            with phone.store().db() as db:
+                row=db.execute('SELECT state,execution_class FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
+                children=[dict(r) for r in db.execute('SELECT id,state,question,plan FROM phone_jobs WHERE batch_id=? ORDER BY created',(job_id,))]
+            if not row or row['state']=='planning':continue
+            self.pending_acceptance.pop(job_id,None)
+            if row['execution_class']=='intake' and not children:continue
+            summary=[]
+            for child in children:
+                plan=json.loads(child['plan'])
+                summary.append({'task':child['id'],'scope':plan.get('atomic_scope'),'state':child['state'],
+                                'message':plan.get('message',{}).get('message'),'question':child['question']})
+            await self.append('thinking','Validated intake. Only tasks with complete content are TASK_READY. '
+                              'A waiting_for_input task is NOT accepted for execution: ask its question at this conversational break. '
+                              'State: '+json.dumps(summary or [{'task':job_id,'state':row['state']}],ensure_ascii=False),delegation,task_id=job_id)
 
 
     def settle_tasks(self):
@@ -587,9 +660,16 @@ class LiveCall:
             content=notice['content']
             if len(content)>1000:
                 content='The full result is saved in the app. It is too long for this context update; do not infer its details.'
-            await self.append('thinking','Background task state (reference only; no speech requested). '
+            with phone.store().db() as db:
+                # Children inherit the original Live delegation correlation.
+                original=db.execute('''SELECT d.delegation_id,COALESCE(j.batch_id,j.id) AS intake_id FROM phone_jobs j
+                    JOIN phone_live_delegations d ON d.job_id=COALESCE(j.batch_id,j.id)
+                    WHERE j.id=? AND d.delegation_id NOT LIKE 'child:%' LIMIT 1''',(identifier,)).fetchone()
+            delegation=self.job_delegations.get(original['intake_id']) if original else None
+            if delegation is None and original and original['delegation_id'] in self.delegations:delegation=original['delegation_id']
+            await self.append('thinking','Task result (reference state; use when relevant to the caller). '
                               +'Original request: '+notice['request'][:300]
-                              +'\nState: '+notice['state']+'\n'+content)
+                              +'\nState: '+notice['state']+'\n'+content,delegation,task_id=identifier)
             self.context_notices.add(identifier)
             self.delivered_notices.add(identifier)
             self.voice_metric(identifier,'context_updated')
@@ -597,7 +677,10 @@ class LiveCall:
 
     async def deliver_notices(self):
         while not self.ending:
+            await self.capture_pending()
+            await self.deliver_acceptance()
             await self.deliver_ready_notice()
+            await self.retry_context()
             await asyncio.sleep(.1)
 
     async def wait_for_result(self, identifier, job_id):
@@ -614,15 +697,15 @@ class LiveCall:
 
     def ignore_social(self, caller):
         return social_only(caller) and (bool(re.search(r'\b(?:bye|goodbye|thanks|thank you)\b',caller,re.I))
-                                       or not phone.store().questions(self.call['actor']))
+                                       or not phone.store().questions(self.call['actor'],self.call['id']))
 
     def save_final_request(self):
         if self.machine_detected:
             return
         transcript,consumed,caller=self.conversation.request(float('inf'))
         if (transcript and not self.ignore_social(caller) and not presence.automated_audio(caller)
-                and not presence.known_question(caller)
-                and (self.hangup_delegation or presence.work_requested(caller) or phone.store().questions(self.call['actor']))):
+                and not presence.known_question(caller) and not presence.recall_question(caller)
+                and (self.hangup_delegation or presence.work_requested(caller) or phone.store().questions(self.call['actor'],self.call['id']))):
             transcript=('The call has ended. Preserve this final caller turn. Complete clear authorized work; '
                         'if the speech is incomplete or a detail is missing, use eli_phone_clarify and keep it in the app. Do not call unless explicitly requested. '
                         'A hangup is not cancellation or approval. No need to reply to a simple goodbye.\n'+transcript)

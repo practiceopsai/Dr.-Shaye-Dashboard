@@ -11,12 +11,13 @@ from unittest.mock import Mock, patch
 root = Path(__file__).parent
 package = ModuleType('phone_unit'); package.__path__ = [str(root)]
 sys.modules['phone_unit'] = package
-for name in ['performance','messaging','operations']:
+for name in ['performance','messaging','operations','prepared']:
     spec = importlib.util.spec_from_file_location('phone_unit.'+name,root/(name+'.py'))
     module = importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
 performance = sys.modules['phone_unit.performance']
 operations = sys.modules['phone_unit.operations']
 messaging = sys.modules['phone_unit.messaging']
+prepared = sys.modules['phone_unit.prepared']
 
 
 class OperationsTests(unittest.TestCase):
@@ -31,6 +32,38 @@ class OperationsTests(unittest.TestCase):
         with patch.object(performance,'current',return_value=(self.perf,self.job,self.quote)):
             result=performance.before_tool(self.settings,tool_name='email_send',args={})
         self.assertTrue(result['block'])
+
+    def test_prepared_email_keeps_antecedent_and_gets_one_verified_receipt(self):
+        quote="text Fabio that I'm running late\nemail him the same thing"
+        self.fresh(quote)
+        self.args.update(message="I'm running late",approval_quote=quote)
+        self.job['plan']={'atomic_kind':'email','operation':'send_message','message':self.args}
+        self.mail.get_message.return_value.update(subject='Message from Eli')
+        active=(self.perf,self.job,quote)
+        def invoke(name,args):
+            self.assertEqual(name,'eli_phone_send_email')
+            return operations.send_email(args,self.settings,invoke=self.invoke,services=self.services,**self.kw)
+        with patch.object(performance,'current',return_value=active),patch.object(performance,'before_tool',return_value=None):
+            for _ in range(2):
+                result=prepared.run(self.job,self.settings,self.perf,invoke=invoke)
+                self.assertTrue(result['source_verified'])
+        sends=[c for c in self.invoke.call_args_list if c.args[0]=='email_send']
+        self.assertEqual(len(sends),1)
+        self.assertEqual(sends[0].args[1]['text'],"I'm running late")
+        self.assertFalse(performance.missing_send_receipt(self.perf,self.job))
+
+    def test_acknowledgment_is_not_a_send_receipt(self):
+        self.job['plan']={'atomic_kind':'email'}
+        self.assertTrue(performance.missing_send_receipt(self.perf,self.job))
+        self.perf.record(self.job['id'],'action','eli_phone_send_email','accepted')
+        self.assertTrue(performance.missing_send_receipt(self.perf,self.job))
+
+    def test_prepared_action_rejects_payload_invented_by_planner(self):
+        self.job['plan']={'atomic_kind':'email','operation':'send_message','message':{
+            **self.args,'message':'Buy something not requested'}}
+        sender=Mock()
+        with self.assertRaises(ValueError):prepared.run(self.job,self.settings,self.perf,invoke=sender)
+        sender.assert_not_called()
 
     def test_mail_uses_loaded_plugin_instance_instead_of_directory_import(self):
         registry_module=ModuleType('tools.registry')

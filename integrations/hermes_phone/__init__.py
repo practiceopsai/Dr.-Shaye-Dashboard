@@ -18,6 +18,7 @@ from . import performance
 from . import presence
 from . import reads
 from . import effects
+from . import prepared
 from .operations import SCHEMAS, latest_email, send_email
 from .clarification import SCHEMAS as QUESTION_SCHEMAS, clarify, answer_clarification, question_for, save_question, possible_question
 
@@ -234,6 +235,10 @@ class PhoneAdapter(BasePlatformAdapter):
             raise RuntimeError('Final response requires review')
         return answer
 
+    @user_turn
+    async def prepared_turn(self,event,job):
+        return await asyncio.to_thread(prepared.execute,job,configuration(),self.performance)
+
     async def process(self,job):
         began=time.monotonic()
         try:
@@ -267,7 +272,16 @@ class PhoneAdapter(BasePlatformAdapter):
                 message_id=job['id'],raw_message={'phone_request_id':job['id'],'authenticated_phone':True})
             # This is the gateway's full authorized message pipeline, including
             # current model routing, SOUL, persona/rank hooks, memory and tools.
-            if job.get('execution_class')=='foreground_read':
+            plan=json.loads(job.get('plan') or '{}') if isinstance(job.get('plan'),str) else job.get('plan',{})
+            action_error=''
+            if plan.get('operation')=='send_message':
+                data=await self.prepared_turn(event,job)
+                if data.get('success') and data.get('message_id'):
+                    answer='The '+plan['atomic_kind']+' message has '+('a verified send receipt.' if data.get('source_verified',True) else 'been accepted; source verification is pending.')
+                else:
+                    action_error=data.get('error','The message was not sent. Review this task before trying again.')[:500]
+                    answer=action_error
+            elif job.get('execution_class')=='foreground_read':
                 # Only a bounded, fixed read allowlist can avoid the native
                 # agent. Read timeouts never turn into background writes.
                 data=await asyncio.wait_for(asyncio.to_thread(reads.execute,job,configuration(),self.performance),12)
@@ -282,6 +296,10 @@ class PhoneAdapter(BasePlatformAdapter):
             if not question and possible_question(answer):
                 question=save_question(self.performance,job['id'],answer)
             state='waiting_for_input' if question else 'completed'
+            if not question and (action_error or performance.missing_send_receipt(self.performance,job)):
+                state='failed'
+                action_error=action_error or 'No send receipt was produced for this message. It was not completed; review it before retrying.'
+                answer=action_error
             unresolved=any(r['state']!='verified' for r in effects.review(self.performance,job))
             if unresolved and not question:state='uncertain'
             if len(job.get('claim',''))>=20:
@@ -289,7 +307,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 if control.get('cancel_requested'):
                     state='uncertain' if unresolved else 'cancelled'
                     answer='Stopped remaining work. Previously accepted effects were not undone. '+answer
-            self.journal.update(job['id'],state,question or answer[:20000])
+            self.journal.update(job['id'],state,question or answer[:20000],error=action_error if state=='failed' else '')
             self.performance.record(job['id'],'timing','native_turn','completed',int((time.monotonic()-began)*1000))
         except asyncio.CancelledError:
             question=question_for(self.performance,job['id'])

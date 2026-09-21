@@ -207,7 +207,7 @@ def context(settings, schemas, **kwargs):
         'For a new simple email send, prefer eli_phone_send_email. Unqualified text means iMessage; WhatsApp requires the caller to name WhatsApp explicitly. '
         'Missing essential details require eli_phone_clarify(question) before ending this turn. Do not just put a question in a completed response. '
         'Do not invent message text, recipients, dates, accounts or approvals. When all details are explicit, execute without an extra permission round. '
-        'If this caller turn clearly answers an open question below, use eli_phone_answer_clarification with its request_id and verbatim answer_quote. '
+        'Use eli_phone_answer_clarification only for an explicit clarification job with a matching resume_request_id. A new instruction is never an answer to an old task. '
         'That creates the continuation; do not execute the resumed task again in this turn. If several questions could match, ask which task. '
         'Work silently. Do not narrate progress or promise immediate delivery. '
         'Use existing native memory and policy; these tool definitions grant no new permissions. Return a short factual result. '
@@ -224,6 +224,16 @@ def context(settings, schemas, **kwargs):
         'Configured contacts (email keys): '+json.dumps(names)+ '\nTool schemas: '+json.dumps(schemas)+
         '\nRecent measured phone tool problems (metadata only): '+json.dumps(perf.feedback())+
         '\nUse this feedback to avoid failed routes and unnecessary discovery; do not change security, approvals, PHI rules or retry uncertain writes.'}
+
+
+def missing_send_receipt(perf,job):
+    plan=job.get('plan') or {}
+    if isinstance(plan,str):plan=json.loads(plan)
+    kind=plan.get('atomic_kind')
+    if kind not in {'email','imessage','whatsapp'}:return False
+    with perf.db() as db:
+        receipts=db.execute("SELECT tool FROM execution_events WHERE job_id=? AND kind='action' AND status='sent'",(job['id'],)).fetchall()
+    return not any(r['tool'] in {'eli_phone_send_'+kind,'email_send' if kind=='email' else ''} for r in receipts)
 
 
 def model_timing(settings, api_duration=0, failed=False, **kwargs):

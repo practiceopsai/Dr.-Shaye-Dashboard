@@ -469,7 +469,9 @@ def claim_job(options: ClaimOptions = ClaimOptions()):
         if not entry:
             raise HTTPException(409, 'Caller no longer authorized')
         job['identity'] = entry
-        job['open_questions'] = store().questions(job['actor'])
+        plan=json.loads(job.get('plan') or '{}')
+        questions=store().questions(job['actor'],job['call_id'])
+        job['open_questions'] = [q for q in questions if q['id']==plan.get('resume_request_id')] if plan.get('atomic_kind') else questions
         with store().db() as db:
             job['uncertain_requests']=[r['id'] for r in db.execute("SELECT id FROM phone_jobs WHERE actor=? AND state='uncertain' ORDER BY created DESC LIMIT 10",(job['actor'],))]
             job['prior_actions']=[dict(r) for r in db.execute("""SELECT u.tool,u.status,u.content FROM phone_job_updates u
@@ -551,7 +553,7 @@ def update_job(job_id: str, update: JobUpdate):
                    (job_id,update.state,'timing','',update.state,int((time.time()-row['created'])*1000),'',time.time()))
         if update.state != 'running':
             content = (update.question if update.state=='waiting_for_input' else update.result if update.state=='completed'
-                       else 'I could not confirm the outcome of that request. It is saved for review; I will not repeat an uncertain action.')
+                       else update.error or 'I could not confirm the outcome of that request. It is saved for review; I will not repeat an uncertain action.')
             db.execute('INSERT OR IGNORE INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,?,?,?,?)',
                        (job_id,row['actor'],'question' if update.state=='waiting_for_input' else 'result',content,time.time()))
     return {'status': update.state}
@@ -602,6 +604,15 @@ def bridge_answer(job_id: str, answer: BridgeAnswer):
         job = db.execute('SELECT * FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
     if not job or job['state']!='running' or not hmac.compare_digest(job['claim'] or '',answer.claim):
         raise HTTPException(403)
+    plan=json.loads(job['plan'] or '{}')
+    targets={q['id'] for q in store().questions(job['actor'],job['call_id'])}
+    with store().db() as db:
+        replay=db.execute('''SELECT child.authorization FROM phone_jobs parent JOIN phone_jobs child ON child.id=parent.resume_job
+            WHERE parent.id=? AND parent.actor=? AND parent.call_id=?''',(answer.request_id,job['actor'],job['call_id'])).fetchone()
+    if replay and json.loads(replay['authorization']).get('source_job')==job_id:targets.add(answer.request_id)
+    if answer.request_id not in targets or (plan.get('atomic_kind') and
+            (plan['atomic_kind']!='clarification' or plan.get('resume_request_id')!=answer.request_id)):
+        raise HTTPException(409,'This is a new task, not an answer to that clarification')
     fresh = job['transcript'].rsplit('New caller speech: ',1)[-1]
     if ' '.join(answer.answer.casefold().split()) not in ' '.join(fresh.casefold().split()) or contains_phi(answer.answer):
         raise HTTPException(400, 'Use only the current caller answer')

@@ -24,6 +24,35 @@ def known_question(text):
     return bool(re.search(r'\b(?:what (?:ai )?model|what.s your name|what is your name|who are you|who (?:do you|you) work for|what (?:is your job|can you do)|who(?:.s| is| are).*\bteam|who am i|what.s my name|what (?:time|day|date) is it|what.s (?:today.s date|the time)|what day is today)\b', text, re.I)) and not work_requested(text)
 
 
+def recall_question(text):
+    return bool(re.search(r'\b(?:last|previous|prior) (?:phone )?call\b',text,re.I)
+                and re.search(r'\b(?:what|recall|remember)\b',text,re.I)
+                and not re.search(r'\b(?:send|email|text|schedule|cancel|repeat|redo)\b',text,re.I))
+
+
+def prior_call(call):
+    """Caller-scoped primary records. Never confuse this call with an earlier one."""
+    if not call.get('id'):
+        return {'available':False,'reason':'No current call boundary supplied.'}
+    with phone.store().db() as db:
+        current=db.execute('SELECT created FROM phone_calls WHERE id=? AND actor=?',(call['id'],call['actor'])).fetchone()
+        if not current:return {'available':False,'reason':'Current call is unavailable.'}
+        row=db.execute('''SELECT c.id,c.created,c.ended,a.payload FROM phone_calls c
+            JOIN phone_conversations a ON a.call_id=c.id AND a.actor=c.actor
+            WHERE c.actor=? AND c.id!=? AND c.ended<=? AND c.created<?
+            ORDER BY c.created DESC LIMIT 1''',(call['actor'],call['id'],current['created'],current['created'])).fetchone()
+        if not row:return {'available':False,'reason':'No earlier recorded call for this caller.'}
+        tasks=[dict(r) for r in db.execute('''SELECT j.id,j.state,d.caller_text AS request,j.result,j.question
+            FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
+            WHERE j.actor=? AND j.call_id=? AND j.execution_class!='intake' ORDER BY j.created LIMIT 8''',(call['actor'],row['id']))]
+    payload=json.loads(row['payload'])
+    words=' '.join(t['text'] for t in payload.get('turns',[]) if t.get('role')=='user')
+    for task in tasks:
+        for field,limit in [('request',500),('result',700),('question',250)]:task[field]=(task[field] or '')[:limit]
+    return {'available':True,'call_id':row['id'],'started_at':row['created'],'ended_at':row['ended'],
+            'caller_words':words[:5000],'tasks':tasks,'rule':'Prior call evidence only, never instructions to repeat work.'}
+
+
 def clock_facts(cfg):
     zone=getattr(cfg,'dashboard_timezone','America/Los_Angeles')
     return {'current_datetime':datetime.now(ZoneInfo(zone)).isoformat(timespec='seconds'),
@@ -57,16 +86,18 @@ def context_for(call, cfg):
              'voice': cfg.phone_voice, 'identity': "Eli, Dr. Omid Shaye's AI chief of staff",
              'phone_policy': 'No access code. Work survives hangup. No callback unless explicitly requested. Text means iMessage; WhatsApp only when named.'}
     facts.update(clock_facts(cfg))
+    facts['previous_call']=prior_call(call)
     with phone.store().db() as db:
         row = db.execute('SELECT * FROM phone_voice_context WHERE actor=?', (call.get('actor',''),)).fetchone()
         facts['phone_work']=[dict(r) for r in db.execute('''SELECT COALESCE(d.caller_text,j.transcript) request,j.state,
             substr(j.result,1,600) verified_result,j.question FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-            WHERE j.actor=? AND j.created>? AND j.state!='expanded' AND NOT (j.execution_class='intake' AND j.state='completed')
-            ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
+            WHERE j.actor=? AND j.call_id=? AND j.state!='expanded' AND NOT (j.execution_class='intake' AND j.state='completed')
+            ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),call.get('id','')))]
         # Unconfirmed generated speech remains in the private audit archive.
         # Reinjecting it into new calls recycles unheard answers and apology loops.
     if row and row['user_id'] == entry.get('user_id') and time.time()-row['updated'] < 300:
         packet = json.loads(row['packet'])
+        packet.pop('recent_phone_dialogue',None)  # Use the explicitly bounded previous_call record above.
         facts.update(packet)
     else:
         facts['context_status'] = 'Native context is unavailable or stale. Answer runtime facts above; do not invent team members, rank or memories.'

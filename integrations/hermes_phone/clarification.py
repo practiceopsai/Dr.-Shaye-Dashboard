@@ -44,6 +44,10 @@ def answer_clarification(args, settings, *, home=None, session=None, api=None):
     perf,job,fresh=active
     identifier=str(args.get('request_id',''))
     quote=str(args.get('answer_quote','')).strip()
+    plan=job.get('plan') or {}
+    if isinstance(plan,str):plan=json.loads(plan)
+    if plan.get('atomic_kind') and (plan['atomic_kind']!='clarification' or plan.get('resume_request_id')!=identifier):
+        return {'success':False,'error':'This is a new independent task. Do not attach it to an older clarification.'}
     if identifier not in {q['id'] for q in job.get('open_questions',[])} or not quote or ' '.join(quote.casefold().split()) not in ' '.join(fresh.casefold().split()):
         return {'success':False,'error':'Select an actual open question and the current caller answer. If the target is ambiguous, clarify first.'}
     if api is None:

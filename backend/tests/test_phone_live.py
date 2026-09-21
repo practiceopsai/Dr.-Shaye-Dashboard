@@ -167,8 +167,8 @@ class FakeModel:
             await self.queue.put(fragment('u2', ' Do not send anything.', end=1800))
             # Ordinary conversation is allowed while a delegation is captured.
             await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'bGlzdGVuaW5n'})
-        elif kind == 'session.commentary.append' or (kind == 'session.thinking.append' and event['content'].startswith('TASK_ACCEPTED')):
-            await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'YWNr' if event['content'].startswith('TASK_ACCEPTED') else 'cmVzdWx0'})
+        elif kind == 'session.commentary.append' or (kind == 'session.thinking.append' and event['content'].startswith('INTAKE_CAPTURED')):
+            await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'YWNr' if event['content'].startswith('INTAKE_CAPTURED') else 'cmVzdWx0'})
         elif kind == 'session.close':
             await self.queue.put({'type': 'session.closed'})
 
@@ -209,7 +209,7 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
                             json={'claim': job['claim'], 'state': 'completed', 'result': 'Set an agenda and review the notes.'})
         assert reply.status_code == 200
         deadline=time.monotonic()+5
-        while not any('Background task state' in e.get('content','') for e in model.sent) and time.monotonic()<deadline:
+        while not any('Task result' in e.get('content','') for e in model.sent) and time.monotonic()<deadline:
             time.sleep(.05)
         assert any('Set an agenda' in e.get('content','') for e in model.sent)
         assert not any(e['type']=='session.commentary.append' for e in model.sent)
@@ -274,7 +274,7 @@ def test_silent_work_and_completion_after_old_90_second_cutoff(configured,monkey
     assert not any('waiting behind' in s or 'still working' in s for s in spoken)
     assert 'The email send is confirmed.' not in spoken
     assert not any(e['type']=='session.instructions.append' for e in model.sent)
-    assert len([e for e in model.sent if 'TASK_ACCEPTED' in e['content']])==1
+    assert len([e for e in model.sent if 'INTAKE_CAPTURED' in e['content']])==1
     assert not spoken
     assert any('The task is complete.' in e['content'] for e in model.sent)
     assert clock.now>=106
