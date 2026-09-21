@@ -14,9 +14,9 @@ export type FeedbackRequest = { category:FeedbackCategory; feedback:string; item
 export type FeedbackResponse = { feedback_id:string; status:"recorded"|"queued"; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean; detail:string };
 export type VoiceResponse = { command_id:string; status:"recorded"|"queued"; intent:"priority_feedback"|"dashboard_change"|"action_request"; message:string; eli_agent_writeback:boolean; retriable:boolean; next_brief_refresh:boolean };
 export type AuthUser = { email:string; name:string; picture?:string|null; role:"owner"|"chief_of_staff" };
-export type PhoneJob = {id:string;transcript:string;state:string;created:number;result:string;error:string;callback_requested:number;actions?:{event_id:string;status:string;content:string}[]};
+export type PhoneJob = {id:string;transcript:string;state:string;created:number;result:string;error:string;callback_requested:number;question?:string;resume_job?:string;parent_id?:string;actions?:{event_id:string;status:string;content:string}[]};
 export type PhoneCall = {id:string;recipient:string;message:string;purpose:string;payload_hash:string;state:string;expires:number;error:string;reply:string};
-export type PhoneAccess = {phone:string;eli_number:string;webhook_url?:string;conversation_mode?:"live"|"request";pin_configured:boolean;bridge_online:boolean;outbound_enabled:boolean;jobs:PhoneJob[];outbound:PhoneCall[]};
+export type PhoneAccess = {phone:string;eli_number:string;webhook_url?:string;conversation_mode?:"live"|"request";pin_configured:boolean;pin_required?:boolean;followup_mode?:string;bridge_online:boolean;outbound_enabled:boolean;jobs:PhoneJob[];outbound:PhoneCall[]};
 
 export const GOOGLE_CREDENTIAL_KEY = "eli_google_credential";
 
@@ -44,6 +44,7 @@ export const api={
   execute:(approval_id:string,payload_hash:string)=>call<{status:string}>("/api/execute",{method:"POST",body:JSON.stringify({approval_id,payload_hash})}),
   voice:(transcript:string)=>call<VoiceResponse>("/api/voice",{method:"POST",body:JSON.stringify({transcript})}),
   phone:()=>call<PhoneAccess>("/api/phone/access"),
+  answerPhoneQuestion:(id:string,answer:string)=>call<{status:string;job_id:string}>(`/api/phone/jobs/${encodeURIComponent(id)}/answer`,{method:"POST",body:JSON.stringify({answer})}),
   phonePin:()=>call<{pin:string;phone:string}>("/api/phone/access/pin",{method:"POST"}),
   proposeCall:(recipient:string,message:string,purpose:string)=>call<PhoneCall>("/api/phone/outbound",{method:"POST",body:JSON.stringify({recipient,message,purpose})}),
   approveCall:(id:string,payload_hash:string)=>call<{status:string}>(`/api/phone/outbound/${encodeURIComponent(id)}/approve`,{method:"POST",body:JSON.stringify({payload_hash})}),

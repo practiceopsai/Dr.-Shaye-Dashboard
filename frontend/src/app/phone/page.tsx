@@ -9,6 +9,7 @@ export default function PhonePage() {
   const [user,setUser]=useState<AuthUser|null>(null);
   const [data,setData]=useState<PhoneAccess|null>(null);
   const [pin,setPin]=useState("");
+  const [answers,setAnswers]=useState<Record<string,string>>({});
   const [webhookCopied,setWebhookCopied]=useState(false);
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
@@ -16,7 +17,7 @@ export default function PhonePage() {
   const [message,setMessage]=useState("");
   const [purpose,setPurpose]=useState("");
   const signOut=useCallback(()=>{
-    sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);setUser(null);setData(null);setPin("");setWebhookCopied(false);
+    sessionStorage.removeItem(GOOGLE_CREDENTIAL_KEY);setUser(null);setData(null);setPin("");setAnswers({});setWebhookCopied(false);
   },[]);
   const refresh=useCallback(async()=>{
     const credential=sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);
@@ -59,25 +60,25 @@ export default function PhonePage() {
   return <main className="phone-page">
     <header><Link href="/">← Command Center</Link><h1>Speak with Eli</h1><p>Same Eli. Requests continue after you hang up.</p></header>
     {error&&<p role="alert" className="phone-error">{error}</p>}
-    {!user?<section className="phone-card"><h2>Private phone access</h2><p>Sign in with your approved account to create your access code and review your requests.</p><GoogleSignIn onCredential={credential=>void signIn(credential)}/></section>:<>
+    {!user?<section className="phone-card"><h2>Private phone access</h2><p>Sign in with your approved account to review and answer your phone requests.</p><GoogleSignIn onCredential={credential=>void signIn(credential)}/></section>:<>
       <p className="phone-account">{user.email} <button onClick={signOut}>Sign out</button></p>
       <section className="phone-card"><h2>Your phone access</h2>
         {data?<><p>Call <a href={`tel:${data.eli_number}`}>{data.eli_number}</a> from <strong>{data.phone}</strong>.</p>
           <p>{data.bridge_online?"Eli is connected.":"Eli is reconnecting. Accepted requests stay saved."}</p>
           <p>{data.conversation_mode==="live"?"Live conversation is enabled. Speak naturally and interrupt when you need to.":"Phone requests are enabled. Live conversation requires the upgraded phone connection."}</p>
-          <p>Enter your eight digit code when Eli answers.{data.conversation_mode!=="live"&&" On the Twilio trial, your number must also be verified in Twilio."}</p>
+          <p>{data.pin_required?"Enter your eight digit code when Eli answers.":"Call from your registered number and start talking. No access code is needed."}</p>
           {data.conversation_mode!=="live"&&data.webhook_url&&<div className="phone-webhook"><h3>Twilio connection</h3>
             <p>Copy this entire private URL into Twilio → Inbound → Custom → Webhook URL. Select POST and save. Keep the link private.</p>
             <label>Private Twilio webhook<input readOnly value={data.webhook_url} onFocus={event=>event.target.select()}/></label>
             <button onClick={()=>void copyWebhook()}>{webhookCopied?"Webhook copied":"Copy private Twilio webhook"}</button>
           </div>}
-          <button disabled={busy} onClick={()=>void perform(async()=>{const credential=sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);const result=await api.phonePin();if(sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY)===credential)setPin(result.pin);})}>{data.pin_configured?"Create a replacement access code":"Create my access code"}</button>
-          {pin&&<div className="phone-code"><span>Your private access code</span><strong>{pin}</strong><p>Save this code privately. Creating another code replaces it.</p><button onClick={()=>setPin("")}>Hide code</button></div>}
+          {data.pin_required&&<button disabled={busy} onClick={()=>void perform(async()=>{const credential=sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY);const result=await api.phonePin();if(sessionStorage.getItem(GOOGLE_CREDENTIAL_KEY)===credential)setPin(result.pin);})}>{data.pin_configured?"Create a replacement access code":"Create my access code"}</button>}
+          {data.pin_required&&pin&&<div className="phone-code"><span>Your private access code</span><strong>{pin}</strong><p>Save this code privately. Creating another code replaces it.</p><button onClick={()=>setPin("")}>Hide code</button></div>}
           <p>Long requests can finish after the call. Approval-sensitive work keeps Eli&apos;s existing rules. Leave patient information out of this channel.</p>
         </>:<p>Loading phone access…</p>}
       </section>
-      <section className="phone-card"><h2>Phone requests</h2><p>Check the actual result below. A completed turn may still ask for approval or explain a blocker.</p>
-        {data?.jobs.length?data.jobs.map(job=><article className="phone-item" key={job.id}><div><b>{job.state==="completed"?"Response ready":job.state.replaceAll("_"," ")}</b><time>{new Date(job.created*1000).toLocaleString()}</time></div><p>{job.transcript}</p>{job.actions?.map(action=><p key={action.event_id} className={action.status==="sent"?"phone-result":"phone-error"}>{action.content}</p>)}{job.result&&<p className="phone-result">{job.result}</p>}{job.error&&<p className="phone-error">{job.error}</p>}{!!job.callback_requested&&<small>One callback requested. Its status appears below.</small>}</article>):<p>No phone requests yet.</p>}
+      <section className="phone-card"><h2>Phone requests</h2><p>Check the actual result below. Tasks needing details stay open until you answer. Results and follow-up calls appear here.</p>
+        {data?.jobs.length?data.jobs.map(job=><article className="phone-item" key={job.id}><div><b>{job.state==="completed"?"Response ready":job.state==="waiting_for_input"?"Needs your answer":job.state.replaceAll("_"," ")}</b><time>{new Date(job.created*1000).toLocaleString()}</time></div><p>{job.transcript}</p>{job.actions?.map(action=><p key={action.event_id} className={action.status==="sent"?"phone-result":"phone-error"}>{action.content}</p>)}{job.result&&<p className="phone-result">{job.result}</p>}{job.error&&<p className="phone-error">{job.error}</p>}{job.state==="waiting_for_input"&&<form onSubmit={event=>{event.preventDefault();void perform(async()=>{await api.answerPhoneQuestion(job.id,answers[job.id]||"");setAnswers(current=>({...current,[job.id]:""}));});}}><label>Your answer<textarea required maxLength={3000} value={answers[job.id]||""} onChange={event=>setAnswers(current=>({...current,[job.id]:event.target.value}))}/></label><button disabled={busy||!(answers[job.id]||"").trim()}>Answer and resume</button></form>}{!!job.callback_requested&&<small>One callback requested. Its status appears below.</small>}</article>):<p>No phone requests yet.</p>}
       </section>
       <section className="phone-card"><h2>Approve an outbound call</h2><p>Eli introduces herself as an AI assistant, speaks the exact approved message, and saves the recipient&apos;s response here. Outside recipients do not get access to your private Eli conversation.</p>
         <form onSubmit={event=>{event.preventDefault();void perform(async()=>{await api.proposeCall(recipient,message,purpose);setRecipient("");setMessage("");setPurpose("");});}}>

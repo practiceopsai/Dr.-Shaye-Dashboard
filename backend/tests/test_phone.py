@@ -20,7 +20,7 @@ from app.security import AuthUser, require_auth
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    cfg=SimpleNamespace(phone_enabled=True,phone_outbound_enabled=False,phone_public_url='https://phone.example',
+    cfg=SimpleNamespace(phone_enabled=True,phone_outbound_enabled=False,phone_pin_required=True,phone_followup_mode='callback',phone_public_url='https://phone.example',
         phone_bridge_token='a-private-bridge-token-for-test',twilio_account_sid='AC'+'1'*32,twilio_auth_token='test-secret',
         twilio_phone_number='+12025550100',dashboard_state_path=str(tmp_path/'state.sqlite3'),
         phone_callers_json=json.dumps({'owner@example.com':{'phone':'+12025550101','user_id':'+12025550101','name':'Owner'},

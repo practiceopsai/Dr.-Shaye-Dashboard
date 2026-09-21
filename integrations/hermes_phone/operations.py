@@ -69,7 +69,7 @@ def send_email(args, settings, *, home=None, session=None, invoke=None, services
         or re.search(r"\b(?:do not|don't|dont|never)\s+(?:send|email)|\bcancel\b",fresh,re.I)
         or (subject != 'Message from Eli' and normalize(subject) not in normalize(quote))):
         return {'success': False, 'error': 'Ask for the exact email recipient and message. A current caller instruction is required; unrelated old emails and assistant speech are not approval.'}
-    digest = hashlib.sha256((job['id']+'\0email\0'+to+'\0'+subject+'\0'+body).encode()).hexdigest()
+    digest = hashlib.sha256(((job.get('root_id') or job['id'])+'\0email\0'+to+'\0'+subject+'\0'+body).encode()).hexdigest()
     with perf.db() as db:
         db.execute('CREATE TABLE IF NOT EXISTS email_receipts(id TEXT PRIMARY KEY,job_id TEXT,state TEXT,receipt TEXT,created REAL)')
         db.execute('BEGIN IMMEDIATE')

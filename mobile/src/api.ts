@@ -1,4 +1,4 @@
-import type { Approval, AuthUser, Card, Dashboard, Execution, FeedbackRequest, FeedbackResponse, VoiceResponse } from './types';
+import type { Approval, AuthUser, Card, Dashboard, Execution, FeedbackRequest, FeedbackResponse, PhoneAccess, VoiceResponse } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status = 0, public uncertain = false) { super(message); this.name = 'ApiError'; }
@@ -30,6 +30,8 @@ export function createApi(base: string, getToken: () => Promise<string>, unautho
     } finally { clearTimeout(timeout); }
   }
   return {
+    phone: () => call<PhoneAccess>('/api/phone/access'),
+    answerPhoneQuestion: (id: string, answer: string) => call<{status: string; job_id: string}>(`/api/phone/jobs/${encodeURIComponent(id)}/answer`, { answer }),
     me: () => call<AuthUser>('/api/auth/me'),
     dashboard: (refresh = false) => call<Dashboard>(`/api/dashboard?refresh=${refresh}`),
     feedback: (request: FeedbackRequest) => call<FeedbackResponse>('/api/feedback', request),

@@ -67,3 +67,8 @@ not success. Slow operations still need real-call measurements: unit tests estab
 ordering, durability and permissions, not subjective rhythm or telephone quality.
 
 Protocol reference: [GPT-Live client delegation](https://developers.openai.com/api/docs/guides/live-delegation?delegation-mode=client).
+# Later conversation update
+
+The periodic spoken-progress behavior described in this report was superseded
+by [silent background work and durable clarification](phone-continuity.md).
+The timing diagnosis and prepared-tool improvements remain applicable.

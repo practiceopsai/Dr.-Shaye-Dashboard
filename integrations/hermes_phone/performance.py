@@ -102,6 +102,9 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
     if not active:
         return None
     perf, job, fresh = active
+    from .clarification import question_for
+    if question_for(perf,job['id']) and tool_name not in {'eli_phone_clarify','eli_context'}:
+        return {'block':True,'message':'This task is waiting for the caller answer. Return the saved question now; do not execute more work.'}
     fp = fingerprint(tool_name,args or {})
     if perf.failed_attempt(job['id'],fp):
         return {'block': True, 'message': 'This exact tool attempt already failed or has an uncertain outcome in this request. Report the existing result; do not retry or choose another channel.'}
@@ -156,9 +159,18 @@ def context(settings, schemas, **kwargs):
     return {'context': 'Prepared phone operations: call tool_call(name, arguments) directly using these schemas; no tool_describe or skill catalog is needed for them. '
         'For latest email, identify the inbox: eli_phone_latest_email reads only Eli AgentMail. My email refers to the authenticated caller, not Eli; use existing personal/practice account routing or clarify. '
         'For a new simple email send, prefer eli_phone_send_email. Unqualified text means iMessage; WhatsApp requires the caller to name WhatsApp explicitly. '
-        'Missing message text requires a brief question. Do not invent a greeting or switch channels. When all details are explicit, execute without an extra permission round. '
+        'Missing essential details require eli_phone_clarify(question) before ending this turn. Do not just put a question in a completed response. '
+        'Do not invent message text, recipients, dates, accounts or approvals. When all details are explicit, execute without an extra permission round. '
+        'If this caller turn clearly answers an open question below, use eli_phone_answer_clarification with its request_id and verbatim answer_quote. '
+        'That creates the continuation; do not execute the resumed task again in this turn. If several questions could match, ask which task. '
+        'Work silently. Do not narrate progress or promise immediate delivery. '
         'Use existing native memory and policy; these tool definitions grant no new permissions. Return a short factual result. '
-        'Do not wait for bookkeeping to announce receipts already delivered to the call. '
+        'The phone delivery scheduler handles results and questions at natural breaks and follows up after hangup. '
+        'Open clarification tasks: '+json.dumps(job.get('open_questions',[]))+'\n'
+        'Earlier action receipts in this SAME task: '+json.dumps(job.get('prior_actions',[]))+'\n'
+        'Other requests with uncertain outcomes (review them before any repeat): '+json.dumps(job.get('uncertain_requests',[]))+'\n'
+        'Preserve confirmed parts of this task. Execute only what remains; never repeat an uncertain action. '
+        'Recent voice delivery observations: '+json.dumps(job.get('delivery_feedback',[]))+'\n'
         'Configured contacts (email keys): '+json.dumps(names)+ '\nTool schemas: '+json.dumps(schemas)+
         '\nRecent measured phone tool problems (metadata only): '+json.dumps(perf.feedback())+
         '\nUse this feedback to avoid failed routes and unnecessary discovery; do not change security, approvals, PHI rules or retry uncertain writes.'}
@@ -177,6 +189,7 @@ def verified_answer(perf, job, answer):
         return answer
     with perf.db() as db:
         sent = {r['tool'] for r in db.execute("SELECT tool FROM execution_events WHERE job_id=? AND kind='action' AND status='sent'",(job['id'],))}
+    sent.update(r['tool'] for r in job.get('prior_actions',[]) if r.get('status')=='sent')
     expected = set()
     if re.search(r'\be-?mail\b',fresh,re.I): expected.add('email')
     if re.search(r'\bwhats\s*app\b',fresh,re.I): expected.add('whatsapp')

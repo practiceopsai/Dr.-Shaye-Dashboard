@@ -228,19 +228,29 @@ async def incoming(request: Request):
         old = db.execute("SELECT response FROM phone_events WHERE call_id=? AND nonce='entry'", (form['CallSid'],)).fetchone()
         if old:
             return Response(old['response'], media_type="application/xml")
-        access = db.execute("SELECT pin_hash,locked_until FROM phone_access WHERE actor=?", (actor,)).fetchone()
-        if not access or not access['pin_hash']:
-            return end("Please sign in to the command center and create your phone access code first.")
-        if access['locked_until'] > time.time():
-            return end("Phone access is temporarily locked. Please try again in fifteen minutes.")
+        require_pin = getattr(settings(), 'phone_pin_required', False)
+        if require_pin:
+            access = db.execute("SELECT pin_hash,locked_until FROM phone_access WHERE actor=?", (actor,)).fetchone()
+            if not access or not access['pin_hash']:
+                return end("Please sign in to the command center and create your phone access code first.")
+            if access['locked_until'] > time.time():
+                return end("Phone access is temporarily locked. Please try again in fifteen minutes.")
         nonce = secrets.token_urlsafe(18)
         db.execute("INSERT INTO phone_calls(id,actor,phone,nonce,created) VALUES (?,?,?,?,?)",
                    (form['CallSid'], actor, form['From'], nonce, time.time()))
         root = Element("Response")
-        gather = SubElement(root, "Gather", input="dtmf", numDigits="8", timeout="10", method="POST",
-                            action=voice_url(f"/api/phone/auth/{nonce}", call_id=form['CallSid']))
-        prompt(gather, "welcome", "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
-        SubElement(root, "Hangup")
+        if require_pin:
+            gather = SubElement(root, "Gather", input="dtmf", numDigits="8", timeout="10", method="POST",
+                                action=voice_url(f"/api/phone/auth/{nonce}", call_id=form['CallSid']))
+            prompt(gather, "welcome", "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
+            SubElement(root, "Hangup")
+        else:
+            db.execute('UPDATE phone_calls SET authenticated=1 WHERE id=?',(form['CallSid'],))
+            from .phone_live import live_enabled, connect_stream
+            if live_enabled(settings()):
+                connect_stream(root, db, form['CallSid'])
+            else:
+                gather_request(root, nonce, form['CallSid'])
         db.execute("INSERT INTO phone_events VALUES (?,?,?)", (form['CallSid'], 'entry', tostring(root, encoding='unicode')))
         return response(root)
 
@@ -417,6 +427,8 @@ def phone_access(response: Response, user: AuthUser = Depends(require_auth)):
             'conversation_mode': 'live' if getattr(settings(), 'phone_live_enabled', False) and not settings().phone_trial_proxy_enabled else 'request',
             'webhook_url': voice_url('/api/phone/incoming', actor=user.email),
             'pin_configured': bool(access and access['pin_hash']),
+            'pin_required': getattr(settings(), 'phone_pin_required', False),
+            'followup_mode': getattr(settings(), 'phone_followup_mode', 'callback'),
             'bridge_online': bool(bridge and time.time()-bridge['seen'] < 30),
             'outbound_enabled': settings().phone_outbound_enabled,
             'jobs': store().jobs(user.email), 'outbound': store().outbound(user.email)}
@@ -425,6 +437,8 @@ def phone_access(response: Response, user: AuthUser = Depends(require_auth)):
 @router.post('/api/phone/access/pin')
 def create_pin(user: AuthUser = Depends(require_auth)):
     owner_entry(user)
+    if not getattr(settings(), 'phone_pin_required', False):
+        raise HTTPException(409, 'Phone access codes are disabled')
     pin = ''.join(secrets.choice('0123456789') for _ in range(8))
     salt = secrets.token_hex(16)
     with store().db() as db:
@@ -450,6 +464,15 @@ def claim_job():
         if not entry:
             raise HTTPException(409, 'Caller no longer authorized')
         job['identity'] = entry
+        job['open_questions'] = store().questions(job['actor'])
+        with store().db() as db:
+            job['uncertain_requests']=[r['id'] for r in db.execute("SELECT id FROM phone_jobs WHERE actor=? AND state='uncertain' ORDER BY created DESC LIMIT 10",(job['actor'],))]
+            job['prior_actions']=[dict(r) for r in db.execute("""SELECT u.tool,u.status,u.content FROM phone_job_updates u
+                JOIN phone_jobs j ON j.id=u.job_id WHERE COALESCE(j.root_id,j.id)=? AND j.id!=? AND u.kind='action'""",
+                (job.get('root_id') or job['id'],job['id']))]
+            job['delivery_feedback']=[dict(r) for r in db.execute("""SELECT u.status,count(*) AS count
+                FROM phone_job_updates u JOIN phone_jobs j ON j.id=u.job_id
+                WHERE j.actor=? AND u.tool='voice_delivery' AND u.created>? GROUP BY u.status""",(job['actor'],time.time()-7*86400))]
     return {'job': job}
 
 
@@ -458,6 +481,7 @@ class JobUpdate(BaseModel):
     state: str
     result: str = Field(default='', max_length=20000)
     error: str = Field(default='', max_length=500)
+    question: str = Field(default='', max_length=1000)
 
 
 class ProgressEvent(BaseModel):
@@ -491,26 +515,77 @@ def job_progress(job_id: str, update: JobProgress):
 
 @router.post('/internal/phone/jobs/{job_id}', dependencies=[Depends(bridge_auth)])
 def update_job(job_id: str, update: JobUpdate):
-    if update.state not in {'running','completed','failed','uncertain'}:
+    if update.state not in {'running','completed','failed','uncertain','waiting_for_input'}:
         raise HTTPException(400)
-    if contains_phi(update.result):
+    if contains_phi(update.result+' '+update.question):
         update.state, update.result, update.error = 'failed', '', 'Response requires a compliant workflow.'
+        update.question = ''
     with store().db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT * FROM phone_jobs WHERE id=?', (job_id,)).fetchone()
         if not row or not hmac.compare_digest(row['claim'] or '', update.claim):
             raise HTTPException(403)
-        if row['state'] in {'completed','failed'}:
+        if row['state'] in {'completed','failed','waiting_for_input','resumed'}:
+            if row['state']=='resumed' and update.state=='waiting_for_input' and row['question']==update.question:
+                return {'status': row['state']}
             if row['state'] == update.state and row['result'] == update.result:
                 return {'status': row['state']}
             raise HTTPException(409, 'Work already finished')
         if update.state == 'completed' and not update.result.strip():
             raise HTTPException(400, 'An empty response is not completion')
-        db.execute('UPDATE phone_jobs SET state=?,result=?,error=?,updated=? WHERE id=?',
-                   (update.state, update.result, update.error, time.time(), job_id))
+        if update.state == 'waiting_for_input' and not update.question.strip():
+            raise HTTPException(400, 'A clarification question is required')
+        db.execute('UPDATE phone_jobs SET state=?,result=?,error=?,question=?,updated=? WHERE id=?',
+                   (update.state, update.result, update.error, update.question, time.time(), job_id))
         db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
                    (job_id,update.state,'timing','',update.state,int((time.time()-row['created'])*1000),'',time.time()))
+        if update.state != 'running':
+            content = (update.question if update.state=='waiting_for_input' else update.result if update.state=='completed'
+                       else 'I could not confirm the outcome of that request. It is saved for review; I will not repeat an uncertain action.')
+            db.execute('INSERT OR IGNORE INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,?,?,?,?)',
+                       (job_id,row['actor'],'question' if update.state=='waiting_for_input' else 'result',content,time.time()))
     return {'status': update.state}
+
+
+class ClarificationAnswer(BaseModel):
+    answer: str = Field(min_length=1, max_length=3000)
+
+
+class BridgeAnswer(ClarificationAnswer):
+    claim: str = Field(min_length=20, max_length=100)
+    request_id: str = Field(min_length=1, max_length=100)
+
+
+@router.post('/internal/phone/jobs/{job_id}/answer', dependencies=[Depends(bridge_auth)])
+def bridge_answer(job_id: str, answer: BridgeAnswer):
+    with store().db() as db:
+        job = db.execute('SELECT * FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
+    if not job or job['state']!='running' or not hmac.compare_digest(job['claim'] or '',answer.claim):
+        raise HTTPException(403)
+    fresh = job['transcript'].rsplit('New caller speech: ',1)[-1]
+    if ' '.join(answer.answer.casefold().split()) not in ' '.join(fresh.casefold().split()) or contains_phi(answer.answer):
+        raise HTTPException(400, 'Use only the current caller answer')
+    try:
+        identifier = store().resume(job['actor'],answer.request_id,answer.answer,job['call_id'],source_job=job_id)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc))
+    return {'status':'resumed','job_id':identifier}
+
+
+@router.post('/api/phone/jobs/{job_id}/answer')
+def answer_question(job_id: str, answer: ClarificationAnswer, user: AuthUser = Depends(require_auth)):
+    owner_entry(user)
+    if contains_phi(answer.answer):
+        raise HTTPException(400, 'Use a compliant workflow for patient information')
+    with store().db() as db:
+        row=db.execute('SELECT call_id FROM phone_jobs WHERE id=? AND actor=?',(job_id,user.email)).fetchone()
+    if not row:
+        raise HTTPException(404)
+    try:
+        identifier=store().resume(user.email,job_id,answer.answer,row['call_id'])
+    except ValueError as exc:
+        raise HTTPException(409,str(exc))
+    return {'status':'resumed','job_id':identifier}
 
 
 class OutboundProposal(BaseModel):
@@ -602,15 +677,27 @@ async def answer_outbound(identifier: str, request: Request):
         db.execute('UPDATE phone_outbound SET call_sid=? WHERE id=?', (form['CallSid'], identifier))
         root = Element('Response')
         if outgoing['callback_job']:
+            if callers().get(outgoing['actor'],{}).get('phone') != outgoing['recipient']:
+                raise HTTPException(403)
             old = db.execute("SELECT response FROM phone_events WHERE call_id=? AND nonce='entry'", (form['CallSid'],)).fetchone()
             if old:
                 return Response(old['response'], media_type='application/xml')
             nonce = secrets.token_urlsafe(18)
             db.execute('INSERT INTO phone_calls(id,actor,phone,nonce,created,outbound_id) VALUES (?,?,?,?,?,?)',
                        (form['CallSid'], outgoing['actor'], outgoing['recipient'], nonce, time.time(), identifier))
-            gather = SubElement(root, 'Gather', input='dtmf', numDigits='8', timeout='10', method='POST', action=voice_url(f'/api/phone/auth/{nonce}', call_id=form['CallSid']))
-            prompt(gather, 'welcome', "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
-            SubElement(root, 'Hangup')
+            if getattr(settings(), 'phone_pin_required', False):
+                gather = SubElement(root, 'Gather', input='dtmf', numDigits='8', timeout='10', method='POST', action=voice_url(f'/api/phone/auth/{nonce}', call_id=form['CallSid']))
+                prompt(gather, 'welcome', "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
+                SubElement(root, 'Hangup')
+            else:
+                db.execute('UPDATE phone_calls SET authenticated=1 WHERE id=?',(form['CallSid'],))
+                from .phone_live import live_enabled, connect_stream
+                if live_enabled(settings()):
+                    connect_stream(root,db,form['CallSid'])
+                else:
+                    job=db.execute('SELECT result,question FROM phone_jobs WHERE id=?',(outgoing['callback_job'],)).fetchone()
+                    if job: say(root,job['question'] or job['result'][:2000])
+                    gather_request(root,nonce,form['CallSid'])
             db.execute('INSERT INTO phone_events VALUES (?,?,?)', (form['CallSid'], 'entry', tostring(root,encoding='unicode')))
         else:
             # Third parties receive only the exact approved message. They never receive
@@ -671,6 +758,8 @@ async def synthesize(text):
 async def phone_work_once():
     """Speech and one-shot outbound effects; never run in a Twilio webhook."""
     cfg = settings()
+    from .phone_followups import close_stale_streams, prepare_callback
+    close_stale_streams()
     now = time.time()
     with store().db() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -693,6 +782,7 @@ async def phone_work_once():
                 db.execute("UPDATE phone_jobs SET audio_state='failed',error='Spoken audio is unavailable; the written result is saved.' WHERE id=?", (job['id'],))
     if not cfg.phone_outbound_enabled:
         return
+    prepare_callback()
     with store().db() as db:
         callback = db.execute("""SELECT * FROM phone_jobs j WHERE callback_requested=1 AND state IN ('completed','failed')
             AND created<? AND created>? AND NOT EXISTS (SELECT 1 FROM phone_outbound o WHERE o.callback_job=j.id) LIMIT 1""", (now-30,now-3600)).fetchone()

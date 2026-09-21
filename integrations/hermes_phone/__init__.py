@@ -16,6 +16,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.response_policy import user_turn, validate_text
 from . import performance
 from .operations import SCHEMAS, latest_email, send_email
+from .clarification import SCHEMAS as QUESTION_SCHEMAS, clarify, answer_clarification, question_for, save_question, possible_question
 
 log = logging.getLogger('eli.phone')
 _settings = {}
@@ -82,10 +83,13 @@ class Journal:
 
     def pending_delivery(self):
         with self.db() as db:
-            return db.execute("SELECT id,payload,state,result,error FROM work WHERE state IN ('completed','failed','uncertain') LIMIT 10").fetchall()
+            return db.execute("SELECT id,payload,state,result,error FROM work WHERE state IN ('completed','failed','uncertain','waiting_for_input') LIMIT 10").fetchall()
 
     def recover(self):
         with self.db() as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clarification_questions'").fetchone():
+                db.execute("""UPDATE work SET state='waiting_for_input',result=(SELECT question FROM clarification_questions q WHERE q.job_id=work.id)
+                    WHERE state='running' AND id IN (SELECT job_id FROM clarification_questions)""")
             # A started tool may already have taken effect. Preserve its receipt;
             # never create a fresh run to paper over an interrupted operation.
             db.execute("UPDATE work SET state='uncertain',error='Eli restarted during this request. Reconcile the existing session before repeating actions.' WHERE state='running'")
@@ -155,7 +159,8 @@ class PhoneAdapter(BasePlatformAdapter):
             job=json.loads(payload)
             try:
                 await asyncio.to_thread(api_request,'/internal/phone/jobs/'+identifier,
-                    {'claim':job['claim'],'state':state,'result':result,'error':error})
+                    {'claim':job['claim'],'state':state,'result':result,'error':error,
+                     'question':question_for(self.performance,identifier) if state=='waiting_for_input' else ''})
                 self.journal.update(identifier,'delivered',result,error)
             except Exception:
                 # Delivery retries only replay a stored receipt, never agent work.
@@ -207,14 +212,21 @@ class PhoneAdapter(BasePlatformAdapter):
             # current model routing, SOUL, persona/rank hooks, memory and tools.
             answer=await self.agent_turn(event)
             answer=performance.verified_answer(self.performance,job,answer)
-            self.journal.update(job['id'],'completed',answer[:20000])
+            question=question_for(self.performance,job['id'])
+            if not question and possible_question(answer):
+                question=save_question(self.performance,job['id'],answer)
+            self.journal.update(job['id'],'waiting_for_input' if question else 'completed',question or answer[:20000])
             self.performance.record(job['id'],'timing','native_turn','completed',int((time.monotonic()-began)*1000))
         except asyncio.CancelledError:
-            self.journal.update(job['id'],'uncertain',error='Request interrupted; reconcile existing actions before repeating it.')
+            question=question_for(self.performance,job['id'])
+            self.journal.update(job['id'],'waiting_for_input' if question else 'uncertain',result=question,
+                                error='' if question else 'Request interrupted; reconcile existing actions before repeating it.')
             raise
         except Exception as exc:
             log.warning('Phone request needs review: %s',type(exc).__name__)
-            self.journal.update(job['id'],'failed',error='A final reply could not be confirmed. Please review the existing work before repeating this request.')
+            question=question_for(self.performance,job['id'])
+            self.journal.update(job['id'],'waiting_for_input' if question else 'failed',result=question,
+                                error='' if question else 'A final reply could not be confirmed. Please review the existing work before repeating this request.')
             self.performance.record(job['id'],'timing','native_turn','failed',int((time.monotonic()-began)*1000))
         await self.flush()
 
@@ -257,15 +269,17 @@ def register(ctx):
     ctx.register_platform(name='eli_phone',label='Eli phone',adapter_factory=PhoneAdapter,check_fn=lambda:True,
         validate_config=lambda cfg:bool(os.environ.get('ELI_PHONE_BRIDGE_TOKEN') and configuration().get('backend_url')),
         allowed_users_env='ELI_PHONE_ALLOWED_USERS',allow_update_command=False,pii_safe=True,
-        platform_hint='This is a private authenticated phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. Private callback updates require the caller phone access code. '+PHONE_TOOL_GUIDANCE)
+        platform_hint='This is a private registered-caller phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. The phone service handles authorized task callbacks without a passcode. Missing required details must use eli_phone_clarify; do not guess or narrate execution. '+PHONE_TOOL_GUIDANCE)
     from .messaging import send_whatsapp, send_imessage
     handlers={'eli_phone_send_whatsapp':send_whatsapp,'eli_phone_send_imessage':send_imessage,
-              'eli_phone_latest_email':latest_email,'eli_phone_send_email':send_email}
-    for schema in SCHEMAS:
+              'eli_phone_latest_email':latest_email,'eli_phone_send_email':send_email,
+              'eli_phone_clarify':clarify,'eli_phone_answer_clarification':answer_clarification}
+    schemas=SCHEMAS+QUESTION_SCHEMAS
+    for schema in schemas:
         handler=handlers[schema['name']]
         ctx.register_tool(name=schema['name'],toolset='eli_phone',schema=schema,
             handler=lambda args,_fn=handler,**kwargs:json.dumps(_fn(args,configuration())))
-    ctx.register_hook('pre_llm_call',lambda **kw:performance.context(configuration(),SCHEMAS,**kw))
+    ctx.register_hook('pre_llm_call',lambda **kw:performance.context(configuration(),schemas,**kw))
     ctx.register_hook('pre_tool_call',lambda **kw:performance.before_tool(configuration(),**kw))
     ctx.register_hook('post_tool_call',lambda **kw:performance.after_tool(configuration(),**kw))
     ctx.register_hook('post_api_request',lambda **kw:performance.model_timing(configuration(),**kw))

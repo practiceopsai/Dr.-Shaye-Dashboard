@@ -11,6 +11,7 @@ import { drafts } from './src/drafts';
 import type { AuthUser, Card } from './src/types';
 import { Composer } from './src/Composer';
 import { ApprovalSheet } from './src/ApprovalSheet';
+import { PhoneRequests } from './src/PhoneRequests';
 import { GoogleButton } from './src/GoogleButton';
 import { createSampleApi, sampleNotice, sampleUser } from './src/sample';
 import { Commitments, EliStatus, LegalLinks, Schedule, Today } from './src/screens';
@@ -18,7 +19,7 @@ import { displayTime } from './src/freshness';
 import { Body, Button, colors, Empty, Heading, Icon, type IconName, Kicker, Notice, Panel, s, Small, Title } from './src/ui';
 
 type Tab = 'today' | 'schedule' | 'commitments' | 'decisions' | 'eli';
-type Sheet = { type: 'request' | 'feedback'; card?: Card } | { type: 'approval'; card: Card } | { type: 'settings' };
+type Sheet = { type: 'request' | 'feedback'; card?: Card } | { type: 'approval'; card: Card } | { type: 'settings' | 'phone' };
 const tabs: { key: Tab; label: string; title: string; icon: IconName }[] = [
   { key: 'today', label: 'Today', title: 'Today', icon: 'sunny-outline' },
   { key: 'schedule', label: 'Schedule', title: 'Your schedule', icon: 'calendar-outline' },
@@ -69,6 +70,7 @@ export function CommandCenter({ user, api, logout, sample = false }: { user: Aut
       <View style={{ gap: 8 }}><Kicker>{new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: current?.timezone || 'America/Los_Angeles' }).format(state.now)}</Kicker><Title>{title}</Title></View>
       <View style={s.between}><View style={[s.row, { flex: 1 }]}><Icon name="ellipse" size={7} color={current?.live ? colors.green : colors.gold} /><Small>{current ? `Updated ${displayTime(current.generated_at, current.timezone)}` : state.online ? 'Waiting for a current brief' : 'Offline'}</Small></View><Pressable accessibilityRole="button" accessibilityLabel="Refresh brief" onPress={() => { void state.refresh(true); }} style={styles.refresh}><Icon name="refresh-outline" size={19} /></Pressable></View>
       <Button label="Send a request to Eli" icon="add-outline" onPress={() => setSheet({ type: 'request' })} secondary />
+      <Button label="Phone requests and answers" icon="call-outline" onPress={() => setSheet({ type: 'phone' })} secondary />
       {!!state.error && <Notice danger>{state.error}</Notice>}
       {!current ? <Empty title={state.loading ? 'Preparing your brief' : 'A current brief is needed'} message={state.loading ? 'Checking Eli, your priorities, and your calendar.' : 'Pull down to refresh. Expired actions stay hidden until fresh information arrives.'} icon={state.loading ? 'sync-outline' : 'cloud-offline-outline'} /> : <>
         {!current.live && <Notice danger>Some sources could not be verified. Approvals are paused until a complete brief is available.</Notice>}
@@ -86,11 +88,12 @@ export function CommandCenter({ user, api, logout, sample = false }: { user: Aut
     <Modal visible={Boolean(sheet)} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => { /* Close controls save drafts and lock during delivery. */ }}>
       <SafeAreaView style={styles.safe}><KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
         <View style={{ alignItems: 'center' }}><View style={{ width: 36, height: 5, borderRadius: 5, backgroundColor: colors.line }} /></View>
-        <Title>{sheet?.type === 'approval' ? 'Review action' : sheet?.type === 'settings' ? 'Your account' : sheet?.type === 'feedback' ? 'Guide Eli' : 'A request for Eli'}</Title>
+        <Title>{sheet?.type === 'phone' ? 'Phone requests' : sheet?.type === 'approval' ? 'Review action' : sheet?.type === 'settings' ? 'Your account' : sheet?.type === 'feedback' ? 'Guide Eli' : 'A request for Eli'}</Title>
         {sample && <Notice>{sampleNotice}</Notice>}
         {(sheet?.type === 'request' || sheet?.type === 'feedback') && <Composer key={`${sheet.type}.${sheet.card?.id || 'general'}`} api={api} owner={user.email} card={sheet.card} mode={sheet.type} online={state.online} onSent={state.afterMutation} close={close} sample={sample} />}
         {sheet?.type === 'approval' && <ApprovalSheet card={sheet.card} data={current} api={api} online={state.online} onSent={state.afterMutation} close={close} sample={sample} />}
         {sheet?.type === 'settings' && <Settings user={user} logout={logout} close={close} sample={sample} />}
+        {sheet?.type === 'phone' && <PhoneRequests api={api} close={close} sample={sample} />}
       </ScrollView></KeyboardAvoidingView>{!state.active && <View style={styles.cover}><Icon name="leaf-outline" size={44} /><Heading>Eli Command Center</Heading></View>}</SafeAreaView>
     </Modal>
     {!state.active && <View style={styles.cover}><Icon name="leaf-outline" size={44} /><Heading>Eli Command Center</Heading></View>}

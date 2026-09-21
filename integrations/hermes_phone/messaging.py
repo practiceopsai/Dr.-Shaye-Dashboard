@@ -87,7 +87,7 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
         named = any(re.search(r'\b' + re.escape(name) + r'\b', quote, re.I) for name in names)
         if not named and recipient.lstrip('+') not in re.sub(r'\D', '', quote):
             return {'success': False, 'error': 'Ask the caller to name the authorized contact or repeat the exact recipient number.'}
-        digest = hashlib.sha256((request_id+'\0'+channel+'\0'+recipient+'\0'+message).encode()).hexdigest()
+        digest = hashlib.sha256(((job.get('root_id') or request_id)+'\0'+channel+'\0'+recipient+'\0'+message).encode()).hexdigest()
         db.execute('CREATE TABLE IF NOT EXISTS message_receipts(id TEXT PRIMARY KEY,request_id TEXT,recipient TEXT,message TEXT,approval_quote TEXT,state TEXT,receipt TEXT,created REAL,updated REAL)')
         db.commit()
         db.execute('BEGIN IMMEDIATE')

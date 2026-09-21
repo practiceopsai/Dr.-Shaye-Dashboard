@@ -16,14 +16,15 @@ identity, persona/rank, account routing and approval rules remain authoritative.
    ownership after upgrade. Number purchases require the user's authorization.
 2. Set the number's incoming Voice webhook to the backend's `/api/phone/incoming`,
    using POST. Direct Twilio webhooks use standard signatures.
-3. Keep the existing caller allowlist and phone access codes. Set
+3. Keep the existing caller allowlist. Set `PHONE_PIN_REQUIRED=false` for direct
+   registered-number access without a passcode. Set
    `TWILIO_PHONE_NUMBER` to the verified owned number, `PHONE_TRIAL_PROXY_ENABLED=false`,
    `PHONE_LIVE_ENABLED=true`, `PHONE_LIVE_MODEL=gpt-live-1`, and `PHONE_VOICE=marin`.
    The existing OpenAI server API key is used. Never expose it to a browser.
-4. After a successful PIN check, the server returns `<Connect><Stream>` pointing
+4. After matching the registered caller, the server returns `<Connect><Stream>` pointing
    to `/api/phone/live`. The WebSocket must pass the Twilio signature check and
-   present a single-use ticket tied to that exact authenticated call. PINs are
-   never forwarded to the voice model. Resetting a PIN revokes an active stream.
+   present a single-use ticket tied to that exact authorized call. The optional
+   legacy PIN mode remains available only when explicitly configured.
 5. Perform a real call covering greeting, a question and follow-up, interruption,
    an approved harmless task, and hangup with work pending. Test callbacks
    separately. Internal protocol tests do not prove telephone audio quality.
@@ -40,7 +41,7 @@ internal context instructions. Hangup stops audio and polling, not accepted work
 
 The native gateway retains its existing execution/recovery rules. Interrupting
 speech does not prove cancellation of an external action. Changed requests are
-delegated and the voice model must wait for a verified outcome. The three-pending-
+delegated and the voice model must wait for a verified outcome. The 32-pending-
 request limit, patient-information boundary and approval requirements remain.
 Memory/rank are accessed through native Eli, not a separate voice memory copy.
 
@@ -61,6 +62,9 @@ bandwidth also limits fidelity compared with a direct app microphone connection.
 Live mode defaults off, and enabling it while trial proxy mode is on cannot emit
 unsupported Stream instructions. Rollback is `PHONE_LIVE_ENABLED=false`; durable
 jobs and the existing request-mode connection remain available.
+
+For silent background execution, durable clarification, playback interruption
+handling and post-call follow-up, see [Phone continuity](phone-continuity.md).
 
 References checked September 20, 2026:
 

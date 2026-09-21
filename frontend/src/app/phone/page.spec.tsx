@@ -4,7 +4,7 @@ import PhonePage from "./page";
 import { api, GOOGLE_CREDENTIAL_KEY } from "@/lib/api";
 
 vi.mock("@/components/GoogleSignIn",()=>({default:({onCredential}:{onCredential:(value:string)=>void})=><button onClick={()=>onCredential("new-credential")}>Test sign in</button>}));
-vi.mock("@/lib/api",()=>({GOOGLE_CREDENTIAL_KEY:"test-credential",api:{me:vi.fn(),phone:vi.fn(),phonePin:vi.fn(),proposeCall:vi.fn(),approveCall:vi.fn(),cancelCall:vi.fn()}}));
+vi.mock("@/lib/api",()=>({GOOGLE_CREDENTIAL_KEY:"test-credential",api:{me:vi.fn(),phone:vi.fn(),phonePin:vi.fn(),answerPhoneQuestion:vi.fn(),proposeCall:vi.fn(),approveCall:vi.fn(),cancelCall:vi.fn()}}));
 const owner={email:"owner@example.com",name:"Owner",role:"owner" as const};
 const access={phone:"+12025550101",eli_number:"+12025550100",pin_configured:false,bridge_online:true,outbound_enabled:true,jobs:[],outbound:[]};
 beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();sessionStorage.setItem(GOOGLE_CREDENTIAL_KEY,"initial");vi.mocked(api.me).mockResolvedValue(owner);vi.mocked(api.phone).mockResolvedValue(access);});
@@ -30,12 +30,23 @@ describe("private phone setup",()=>{
     expect(screen.queryByDisplayValue(webhook)).not.toBeInTheDocument();
   });
   it("shows a newly created code only in the current signed-in session",async()=>{
+    vi.mocked(api.phone).mockResolvedValue({...access,pin_required:true});
     vi.mocked(api.phonePin).mockResolvedValue({pin:"12345678",phone:access.phone});
     render(<PhonePage/>);
     fireEvent.click(await screen.findByText("Create my access code"));
     expect(await screen.findByText("12345678")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Sign out"));
     expect(screen.queryByText("12345678")).not.toBeInTheDocument();
+  });
+  it("starts without codes and resumes an exact waiting task",async()=>{
+    vi.mocked(api.phone).mockResolvedValue({...access,pin_required:false,jobs:[{id:"waiting-one",transcript:"Email Fabio",state:"waiting_for_input",created:1,result:"What should I say?",question:"What should I say?",error:"",callback_requested:0}]});
+    vi.mocked(api.answerPhoneQuestion).mockResolvedValue({status:"resumed",job_id:"continuation"});
+    render(<PhonePage/>);
+    expect(await screen.findByText("Needs your answer")).toBeInTheDocument();
+    expect(screen.queryByText("Create my access code")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Your answer"),{target:{value:"Say hello."}});
+    fireEvent.click(screen.getByText("Answer and resume"));
+    await waitFor(()=>expect(api.answerPhoneQuestion).toHaveBeenCalledWith("waiting-one","Say hello."));
   });
   it("requires an explicit click on the reviewed exact call",async()=>{
     vi.mocked(api.phone).mockResolvedValue({...access,outbound:[{id:"call-one",recipient:"+12025550199",message:"Please confirm your hours.",purpose:"Hours",payload_hash:"exact-payload",state:"pending_approval",expires:Date.now()/1000+300,error:"",reply:""}]});

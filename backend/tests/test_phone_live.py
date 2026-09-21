@@ -240,7 +240,7 @@ def test_progress_claim_auth_deduplication_and_patient_boundary(configured):
     assert not any(e['event_id']=='native-2' for e in phone.store().updates(job_id))
 
 
-def test_spoken_progress_receipt_and_completion_after_old_90_second_cutoff(configured,monkeypatch):
+def test_silent_work_and_completion_after_old_90_second_cutoff(configured,monkeypatch):
     cfg,_=configured
     call=live.activate_stream(authenticated_stream(configured),cfg)
     job_id=live.enqueue(call,'slow-test','Complete approved task.','Complete approved task.')
@@ -256,12 +256,15 @@ def test_spoken_progress_receipt_and_completion_after_old_90_second_cutoff(confi
                     (job_id,'native-receipt','action','email_send','sent',100,'The email send is confirmed.',time.time()))
             if clock.now>=106:
                 db.execute("UPDATE phone_jobs SET state='completed',result='The task is complete.' WHERE id=?",(job_id,))
+                db.execute("INSERT OR IGNORE INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,'owner@example.com','result','The task is complete.',?)",(job_id,time.time()))
         await real_sleep(0)
     monkeypatch.setattr(live.asyncio,'sleep',advance)
     asyncio.run(call.wait_for_result('slow-test',job_id))
     spoken=[e['content'] for e in model.sent if e['type']=='session.commentary.append']
-    assert any('waiting behind' in s for s in spoken)
-    assert spoken.count('The email send is confirmed.')==1
+    assert not any('waiting behind' in s or 'still working' in s for s in spoken)
+    assert 'The email send is confirmed.' not in spoken
+    assert not any(e['type']=='session.instructions.append' for e in model.sent)
+    assert len([e for e in model.sent if 'durably accepted' in e['content']])==1
     assert 'The task is complete.' in spoken[-1]
     assert clock.now>=106
     assert len(spoken)<10
@@ -286,6 +289,7 @@ def test_existing_spoken_acknowledgment_is_not_repeated(configured):
     job_id=live.enqueue(call,'ack-test','Check email.','Check email.')
     with phone.store().db() as db:
         db.execute("UPDATE phone_jobs SET state='completed',result='The lookup is ready.' WHERE id=?",(job_id,))
+        db.execute("INSERT INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,'owner@example.com','result','The lookup is ready.',?)",(job_id,time.time()))
     model=FakeModel();live_call=live.LiveCall(None,model,cfg,call,STREAM)
     live_call.conversation.append(fragment('u1','Check email.',end=1000))
     live_call.conversation.append(fragment('a1',"I'm checking now.",end=1500,role='assistant'))
