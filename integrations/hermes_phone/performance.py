@@ -102,6 +102,18 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
     if not active:
         return None
     perf, job, fresh = active
+    from . import effects
+    if len(job.get('claim',''))>=20:
+        # Fail closed for effects if cancellation state cannot be checked.
+        from . import api_control
+        try:control=api_control(job)
+        except Exception:
+            if effects.mutation(tool_name,args or {}) or tool_name.startswith('eli_phone_send_'):
+                return {'block':True,'message':'Task control is unavailable; no new effect may start. Preserve existing receipts.'}
+            control={}
+        if control.get('cancel_requested') or control.get('state')=='cancelled':
+            perf.record(job['id'],'timing','cancellation','cancel_requested')
+            return {'block':True,'message':'The caller cancelled this task. Stop starting tools. Already accepted effects may have completed; report their existing receipts honestly.'}
     from .clarification import question_for
     if question_for(perf,job['id']) and tool_name not in {'eli_phone_clarify','eli_context'}:
         return {'block':True,'message':'This task is waiting for the caller answer. Return the saved question now; do not execute more work.'}
@@ -119,6 +131,7 @@ def before_tool(settings, tool_name='', args=None, **kwargs):
         content = ''
     if content:
         perf.record(job['id'],'progress',tool_name,'running',content=content)
+    return effects.begin(perf,job,tool_name,args or {})
 
 
 def after_tool(settings, tool_name='', args=None, result=None, duration_ms=0, status='', **kwargs):
@@ -131,6 +144,9 @@ def after_tool(settings, tool_name='', args=None, result=None, duration_ms=0, st
     except (ValueError,TypeError):
         data = {}
     data = data if isinstance(data,dict) else {}
+    from . import effects
+    effects.finish(perf,job,tool_name,args or {},data,status)
+    if effects.mutation(tool_name,args or {}) and status!='blocked':effects.reconcile(perf,job)
     failed = status in {'error','failed','blocked'} or data.get('success') is False or bool(data.get('error'))
     outcome = 'uncertain' if data.get('state') == 'uncertain' else 'failed' if failed else 'ok'
     perf.record(job['id'],'timing',tool_name,outcome,duration_ms,fingerprint=fingerprint(tool_name,args or {}))
@@ -140,11 +156,13 @@ def after_tool(settings, tool_name='', args=None, result=None, duration_ms=0, st
         # Receipt, not model prose, is the authority. Never include message body,
         # recipient or provider diagnostics in spoken progress/telemetry.
         if data.get('success') is True and data.get('message_id'):
+            verified=tool_name not in {'email_send','eli_phone_send_email'} or data.get('source_verified') is True
             receipt = hashlib.sha256(str(data['message_id']).encode()).hexdigest()
             with perf.db() as db:
                 exists = db.execute("SELECT 1 FROM execution_events WHERE job_id=? AND kind='action' AND fingerprint=?", (job['id'],receipt)).fetchone()
             if not exists:
-                perf.record(job['id'],'action',tool_name,'sent',content='The requested '+channels[tool_name]+' message has a confirmed send receipt. Other requested work may still be running.',fingerprint=receipt)
+                perf.record(job['id'],'action',tool_name,'sent' if verified else 'accepted',content=
+                    'The requested '+channels[tool_name]+(' message has a verified send receipt.' if verified else ' send was accepted; source verification is still required. Do not resend.'),fingerprint=receipt)
         elif failed:
             perf.record(job['id'],'action',tool_name,'failed',content='The '+channels[tool_name]+' send is not confirmed. '+
                         ('The iMessage connection must be restored; no other channel was used.' if data.get('state')=='unavailable' else 'I will not repeat an uncertain send.'))
@@ -165,7 +183,8 @@ def context(settings, schemas, **kwargs):
         'That creates the continuation; do not execute the resumed task again in this turn. If several questions could match, ask which task. '
         'Work silently. Do not narrate progress or promise immediate delivery. '
         'Use existing native memory and policy; these tool definitions grant no new permissions. Return a short factual result. '
-        'The phone delivery scheduler handles results and questions at natural breaks and follows up after hangup. '
+        'The phone delivery scheduler holds results and questions for relevant breaks; otherwise they stay in the app. No automatic callback. '
+        'Cancel exact pending tasks with eli_phone_cancel_task. Speech interruption is not action cancellation. '
         'Open clarification tasks: '+json.dumps(job.get('open_questions',[]))+'\n'
         'Earlier action receipts in this SAME task: '+json.dumps(job.get('prior_actions',[]))+'\n'
         'Other requests with uncertain outcomes (review them before any repeat): '+json.dumps(job.get('uncertain_requests',[]))+'\n'
@@ -184,6 +203,14 @@ def model_timing(settings, api_duration=0, failed=False, **kwargs):
 
 
 def verified_answer(perf, job, answer):
+    from .effects import review
+    effects=review(perf,job)
+    pending=[r for r in effects if r['state']!='verified']
+    if pending:
+        confirmed=sum(r['state']=='verified' for r in effects)
+        return ('Provider verification is still pending for '+str(len(pending))+' operation(s). '
+                +(str(confirmed)+' other operation(s) have verified receipts. ' if confirmed else '')
+                +'The existing attempts are saved; I will not repeat an uncertain action.')
     fresh = job.get('transcript','').rsplit('New caller speech: ',1)[-1]
     if not re.search(r'\b(send|text|email)\b',fresh,re.I):
         return answer

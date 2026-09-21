@@ -104,6 +104,9 @@ def send_email(args, settings, *, home=None, session=None, invoke=None, services
                 svc = services or mail_services()
                 fetched = svc.mail.get_message(sent['message_id'])
                 receipt['source_verified'] = (fetched.get('message_id')==sent['message_id'] and to in fetched.get('to',[]) and fetched.get('subject')==subject)
+                if receipt['source_verified']:
+                    from .effects import verified_provider
+                    verified_provider(perf,job,sent['message_id'])
             except Exception:
                 pass
             if not receipt['source_verified'] or not receipt['tracking_closed']:

@@ -114,7 +114,8 @@ def test_result_and_question_are_held_while_caller_speaks(configured):
     voice.last_speech=0
     asyncio.run(voice.deliver_ready_notice())
     spoken=[e for e in model.sent if e['type']=='session.commentary.append']
-    assert len(spoken)==1 and spoken[0]['content']=='What should I say?'
+    assert len(spoken)==1 and spoken[0]['content'].endswith('What should I say?')
+    assert 'Email Fabio.' in spoken[0]['content']
     assert phone.store().notices(call['actor'])[0]['heard_at'] is None
 
 

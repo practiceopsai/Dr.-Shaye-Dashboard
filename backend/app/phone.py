@@ -455,11 +455,15 @@ def bridge_auth(authorization: str | None = Header(default=None)):
         raise HTTPException(403)
 
 
+class ClaimOptions(BaseModel):
+    lane: str = Field(default='any',pattern='^(any|read|agent)$')
+
+
 @router.post('/internal/phone/claim', dependencies=[Depends(bridge_auth)])
-def claim_job():
+def claim_job(options: ClaimOptions = ClaimOptions()):
     with store().db() as db:
         db.execute('INSERT OR REPLACE INTO phone_bridge_health VALUES (1,?,?)', (time.time(), '1'))
-    job = store().claim()
+    job = store().claim(options.lane)
     if job:
         entry = callers().get(job['actor'])
         if not entry:
@@ -516,7 +520,7 @@ def job_progress(job_id: str, update: JobProgress):
 
 @router.post('/internal/phone/jobs/{job_id}', dependencies=[Depends(bridge_auth)])
 def update_job(job_id: str, update: JobUpdate):
-    if update.state not in {'running','completed','failed','uncertain','waiting_for_input'}:
+    if update.state not in {'running','completed','failed','uncertain','waiting_for_input','cancelled'}:
         raise HTTPException(400)
     if contains_phi(update.result+' '+update.question):
         update.state, update.result, update.error = 'failed', '', 'Response requires a compliant workflow.'
@@ -526,12 +530,14 @@ def update_job(job_id: str, update: JobUpdate):
         row = db.execute('SELECT * FROM phone_jobs WHERE id=?', (job_id,)).fetchone()
         if not row or not hmac.compare_digest(row['claim'] or '', update.claim):
             raise HTTPException(403)
-        if row['state'] in {'completed','failed','waiting_for_input','resumed'}:
+        if row['state'] in {'completed','failed','waiting_for_input','resumed','cancelled'}:
             if row['state']=='resumed' and update.state=='waiting_for_input' and row['question']==update.question:
                 return {'status': row['state']}
             if row['state'] == update.state and row['result'] == update.result:
                 return {'status': row['state']}
             raise HTTPException(409, 'Work already finished')
+        if update.state=='running' and (row['state'] not in {'claimed','running'} or row['cancel_requested']):
+            raise HTTPException(409,'Work cannot start after cancellation or an uncertain execution')
         if update.state == 'completed' and not update.result.strip():
             raise HTTPException(400, 'An empty response is not completion')
         if update.state == 'waiting_for_input' and not update.question.strip():
@@ -546,6 +552,36 @@ def update_job(job_id: str, update: JobUpdate):
             db.execute('INSERT OR IGNORE INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,?,?,?,?)',
                        (job_id,row['actor'],'question' if update.state=='waiting_for_input' else 'result',content,time.time()))
     return {'status': update.state}
+
+
+@router.get('/internal/phone/jobs/{job_id}/control', dependencies=[Depends(bridge_auth)])
+def task_control(job_id: str, claim: str = Header(alias='X-Phone-Claim')):
+    with store().db() as db:
+        row=db.execute('SELECT state,claim,cancel_requested FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
+    if not row or not hmac.compare_digest(row['claim'] or '',claim):raise HTTPException(403)
+    return {'state':row['state'],'cancel_requested':bool(row['cancel_requested'])}
+
+
+@router.post('/api/phone/jobs/{job_id}/cancel')
+def cancel_task(job_id: str,user:AuthUser=Depends(require_auth)):
+    try:return store().cancel(user.email,job_id)
+    except ValueError as exc:raise HTTPException(404,str(exc)) from None
+
+
+class TaskCancellation(BaseModel):
+    claim: str = Field(min_length=20,max_length=100)
+    request_id: str = Field(min_length=1,max_length=100)
+    quote: str = Field(min_length=5,max_length=3000)
+
+
+@router.post('/internal/phone/jobs/{job_id}/cancel',dependencies=[Depends(bridge_auth)])
+def cancel_task_from_call(job_id:str,request:TaskCancellation):
+    with store().db() as db:row=db.execute('SELECT * FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
+    if not row or row['state']!='running' or not hmac.compare_digest(row['claim'] or '',request.claim):raise HTTPException(403)
+    fresh=row['transcript'].rsplit('New caller speech: ',1)[-1]
+    if request.quote not in fresh or not re.search(r'\b(?:cancel|do not|don.t|stop)\b',request.quote,re.I):raise HTTPException(400,'A current explicit cancellation is required')
+    try:return store().cancel(row['actor'],request.request_id)
+    except ValueError as exc:raise HTTPException(404,str(exc)) from None
 
 
 class ClarificationAnswer(BaseModel):

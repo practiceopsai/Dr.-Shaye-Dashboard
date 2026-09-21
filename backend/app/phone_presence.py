@@ -60,6 +60,8 @@ def archive(call, fragments, model, delegated=()):
     """A conversation record never enters the action queue or authorizes a call."""
     turns = []
     for f in fragments:
+        if f['role']=='assistant' and f.get('playback') in {'discarded','unconfirmed'}:
+            continue
         if not f['text'].strip() or automated_audio(f['text']):
             continue
         if contains_phi(f['text']) or PRIVATE.search(f['text']):
@@ -107,8 +109,14 @@ def relevant_notice(notice, call_id, latest):
         return True
     if notice.get('source_call') != call_id:
         return False
+    if notice.get('notify_policy')=='silent_success' and notice.get('state')=='completed':
+        if not re.search(r'\b(?:did you|is it done|finished|result|update|about that)\b',latest,re.I):return False
     origin = notice.get('request', '')
     if latest.strip() and (latest.strip() in origin or origin.strip() in latest):
         return True
-    overlap = terms(origin) & terms(latest)
-    return len(overlap)>=2 or bool(overlap & {'email','inbox','whatsapp','calendar','schedule','imessage','checklist'})
+    # A common channel word does not establish a common topic. A general
+    # discussion about email-writing must not release an old inbox result.
+    generic={'email','mail','inbox','whatsapp','calendar','schedule','imessage','check','latest','recent','message','send','write','good','should'}
+    overlap=(terms(origin)&terms(latest))-generic
+    if re.search(r'\b(?:how|why|what do you think)\b',latest,re.I):return False
+    return len(overlap)>=2 or (bool(overlap) and bool(re.search(r'\b(?:did|done|finish|find|found|result|update|about|that)\b',latest,re.I)))

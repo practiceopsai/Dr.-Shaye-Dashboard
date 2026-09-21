@@ -16,6 +16,8 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.response_policy import user_turn, validate_text
 from . import performance
 from . import presence
+from . import reads
+from . import effects
 from .operations import SCHEMAS, latest_email, send_email
 from .clarification import SCHEMAS as QUESTION_SCHEMAS, clarify, answer_clarification, question_for, save_question, possible_question
 
@@ -58,6 +60,13 @@ def api_request(path, payload):
         return json.load(response)
 
 
+def api_control(job):
+    cfg=configuration()
+    request=urllib.request.Request(cfg['backend_url'].rstrip('/')+'/internal/phone/jobs/'+job['id']+'/control',
+        headers={'Authorization':'Bearer '+os.environ['ELI_PHONE_BRIDGE_TOKEN'],'X-Phone-Claim':job['claim']})
+    with urllib.request.urlopen(request,timeout=3) as response:return json.load(response)
+
+
 class Journal:
     def __init__(self,path):
         self.path=path
@@ -84,7 +93,7 @@ class Journal:
 
     def pending_delivery(self):
         with self.db() as db:
-            return db.execute("SELECT id,payload,state,result,error FROM work WHERE state IN ('completed','failed','uncertain','waiting_for_input') LIMIT 10").fetchall()
+            return db.execute("SELECT id,payload,state,result,error FROM work WHERE state IN ('completed','failed','uncertain','waiting_for_input','cancelled') LIMIT 10").fetchall()
 
     def recover(self):
         with self.db() as db:
@@ -109,6 +118,8 @@ class PhoneAdapter(BasePlatformAdapter):
         self.performance=performance.Performance(self.journal.path)
         self.loop_task=None
         self.presence_task=None
+        self.read_task=None
+        self.reconcile_task=None
         self.running={}
 
     async def connect(self, *, is_reconnect=False):
@@ -119,10 +130,18 @@ class PhoneAdapter(BasePlatformAdapter):
             self.running[job['id']]=asyncio.create_task(self.process(job))
         self.loop_task=asyncio.create_task(self.poll())
         self.presence_task=asyncio.create_task(presence.sync(self,api_request,configuration))
+        self.read_task=asyncio.create_task(self.poll_reads())
+        self.reconcile_task=asyncio.create_task(self.poll_reconciliation())
         return True
 
     async def disconnect(self):
         self._running=False
+        if self.reconcile_task:
+            self.reconcile_task.cancel()
+            await asyncio.gather(self.reconcile_task,return_exceptions=True)
+        if self.read_task:
+            self.read_task.cancel()
+            await asyncio.gather(self.read_task,return_exceptions=True)
         if self.presence_task:
             self.presence_task.cancel()
             await asyncio.gather(self.presence_task,return_exceptions=True)
@@ -178,7 +197,7 @@ class PhoneAdapter(BasePlatformAdapter):
                 await self.flush()
                 self.running={key:task for key,task in self.running.items() if not task.done()}
                 if len(self.running)<2:
-                    result=await asyncio.to_thread(api_request,'/internal/phone/claim',{})
+                    result=await asyncio.to_thread(api_request,'/internal/phone/claim',{'lane':'agent'})
                     job=result.get('job')
                     if job and self.journal.accept(job):
                         self.running[job['id']]=asyncio.create_task(self.process(job))
@@ -187,6 +206,26 @@ class PhoneAdapter(BasePlatformAdapter):
             except Exception as exc:
                 log.warning('Phone bridge check failed: %s',type(exc).__name__)
             await asyncio.sleep(.5 if self.running else 1)
+
+    async def poll_reads(self):
+        # Independent of model execution and receipt flushing. An old slow job
+        # cannot hold the caller's new informational read behind it.
+        while self._running:
+            try:
+                result=await asyncio.to_thread(api_request,'/internal/phone/claim',{'lane':'read'})
+                job=result.get('job')
+                if job and self.journal.accept(job):
+                    await self.process(job)
+            except asyncio.CancelledError:raise
+            except Exception as exc:log.warning('Phone read lane unavailable: %s',type(exc).__name__)
+            await asyncio.sleep(.2)
+
+    async def poll_reconciliation(self):
+        while self._running:
+            try:await asyncio.to_thread(effects.reconcile_saved,self.performance,configuration())
+            except asyncio.CancelledError:raise
+            except Exception as exc:log.warning('Phone receipt verification unavailable: %s',type(exc).__name__)
+            await asyncio.sleep(15)
 
     @user_turn
     async def agent_turn(self,event):
@@ -207,7 +246,15 @@ class PhoneAdapter(BasePlatformAdapter):
                 raise PermissionError('Phone caller is not authorized by the gateway')
             if not self._message_handler:
                 raise RuntimeError('Gateway is not ready')
-            await asyncio.to_thread(api_request,'/internal/phone/jobs/'+job['id'],{'claim':job['claim'],'state':'running'})
+            try:
+                await asyncio.to_thread(api_request,'/internal/phone/jobs/'+job['id'],{'claim':job['claim'],'state':'running'})
+            except urllib.error.HTTPError as exc:
+                if exc.code==409:
+                    control=await asyncio.to_thread(api_control,job)
+                    if control['state']=='cancelled':
+                        self.journal.update(job['id'],'delivered','Cancelled before execution.')
+                        return
+                raise
             self.journal.update(job['id'],'running')
             self.performance.record(job['id'],'timing',status='native_started')
             source=self.build_source(chat_id=chat_id,chat_name='Eli phone',chat_type='dm',
@@ -216,12 +263,29 @@ class PhoneAdapter(BasePlatformAdapter):
                 message_id=job['id'],raw_message={'phone_request_id':job['id'],'authenticated_phone':True})
             # This is the gateway's full authorized message pipeline, including
             # current model routing, SOUL, persona/rank hooks, memory and tools.
-            answer=await self.agent_turn(event)
+            if job.get('execution_class')=='foreground_read':
+                # Only a bounded, fixed read allowlist can avoid the native
+                # agent. Read timeouts never turn into background writes.
+                data=await asyncio.wait_for(asyncio.to_thread(reads.execute,job,configuration(),self.performance),12)
+                if data.get('clarification'):
+                    save_question(self.performance,job['id'],data['clarification'])
+                answer=json.dumps(data,ensure_ascii=False)
+            else:
+                answer=await self.agent_turn(event)
+                await asyncio.to_thread(effects.reconcile,self.performance,job)
             answer=performance.verified_answer(self.performance,job,answer)
             question=question_for(self.performance,job['id'])
             if not question and possible_question(answer):
                 question=save_question(self.performance,job['id'],answer)
-            self.journal.update(job['id'],'waiting_for_input' if question else 'completed',question or answer[:20000])
+            state='waiting_for_input' if question else 'completed'
+            unresolved=any(r['state']!='verified' for r in effects.review(self.performance,job))
+            if unresolved and not question:state='uncertain'
+            if len(job.get('claim',''))>=20:
+                control=await asyncio.to_thread(api_control,job)
+                if control.get('cancel_requested'):
+                    state='uncertain' if unresolved else 'cancelled'
+                    answer='Stopped remaining work. Previously accepted effects were not undone. '+answer
+            self.journal.update(job['id'],state,question or answer[:20000])
             self.performance.record(job['id'],'timing','native_turn','completed',int((time.monotonic()-began)*1000))
         except asyncio.CancelledError:
             question=question_for(self.performance,job['id'])
@@ -280,8 +344,8 @@ def register(ctx):
     handlers={'eli_phone_send_whatsapp':send_whatsapp,'eli_phone_send_imessage':send_imessage,
               'eli_phone_latest_email':latest_email,'eli_phone_send_email':send_email,
               'eli_phone_clarify':clarify,'eli_phone_answer_clarification':answer_clarification,
-              'eli_phone_request_callback':presence.request_callback}
-    schemas=SCHEMAS+QUESTION_SCHEMAS+[presence.CALLBACK_SCHEMA]
+              'eli_phone_request_callback':presence.request_callback,'eli_phone_cancel_task':effects.cancel_tool}
+    schemas=SCHEMAS+QUESTION_SCHEMAS+[presence.CALLBACK_SCHEMA,effects.CANCEL_SCHEMA]
     for schema in schemas:
         handler=handlers[schema['name']]
         ctx.register_tool(name=schema['name'],toolset='eli_phone',schema=schema,

@@ -166,8 +166,8 @@ class FakeModel:
             # Real Live sessions can delegate before the final qualifier arrives.
             await self.queue.put(fragment('u2', ' Do not send anything.', end=1800))
             await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'YWNr'})
-        elif kind == 'session.commentary.append':
-            await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'cmVzdWx0'})
+        elif kind == 'session.commentary.append' or (kind == 'session.thinking.append' and event['content'].startswith('TASK_ACCEPTED')):
+            await self.queue.put({'type': 'session.output_audio.delta', 'delta': 'YWNr' if event['content'].startswith('TASK_ACCEPTED') else 'cmVzdWx0'})
         elif kind == 'session.close':
             await self.queue.put({'type': 'session.closed'})
 
@@ -204,9 +204,16 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
         reply = client.post('/internal/phone/jobs/' + job['id'], headers=headers,
                             json={'claim': job['claim'], 'state': 'completed', 'result': 'Set an agenda and review the notes.'})
         assert reply.status_code == 200
-        assert ws.receive_json()['media']['payload'] == 'cmVzdWx0'
+        while True:
+            output=ws.receive_json()
+            if output.get('event')=='mark':
+                ws.send_json(output)
+                continue
+            assert output['media']['payload']=='cmVzdWx0'
+            break
         ws.send_json({'event': 'stop', 'streamSid': STREAM})
-        with pytest.raises(WebSocketDisconnect): ws.receive_json()
+        with pytest.raises(WebSocketDisconnect):
+            while True:ws.receive_json()  # Playout marks can already be queued.
     with phone.store().db() as db:
         assert db.execute('SELECT state FROM phone_live_streams').fetchone()[0] == 'closed'
     assert any(e['type'] == 'session.close' for e in model.sent)
@@ -219,8 +226,8 @@ def test_long_results_are_not_spoken_before_complete_context(configured):
     call = live.LiveCall(None, model, cfg, {}, STREAM)
     asyncio.run(call.append('commentary', 'x' * 1200 + ' Action has not been approved.', 'd1'))
     assert all(len(e['content']) <= 500 for e in model.sent)
-    assert not any(e['type'] == 'session.commentary.append' for e in model.sent)
-    assert model.sent[-1]['type'] == 'session.instructions.append'
+    assert sum(e['type'] == 'session.commentary.append' for e in model.sent)==1
+    assert model.sent[-1]['type'] == 'session.commentary.append'
     assert 'pending approvals' in model.sent[-1]['content']
 
 

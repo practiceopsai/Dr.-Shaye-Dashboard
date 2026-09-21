@@ -62,18 +62,30 @@ class PhoneStore:
                 CREATE TABLE IF NOT EXISTS phone_conversations (
                     call_id TEXT PRIMARY KEY, actor TEXT NOT NULL, payload TEXT NOT NULL,
                     created REAL NOT NULL, archived REAL);
+                CREATE TABLE IF NOT EXISTS phone_trace (
+                    call_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
+                    turn_id TEXT, topic_id TEXT, response_id TEXT, task_id TEXT,
+                    offset_ms INTEGER NOT NULL, duration_ms INTEGER NOT NULL, status TEXT,
+                    created REAL NOT NULL, PRIMARY KEY(call_id,sequence));
             """)
             # Additive migration: existing accepted work and receipts stay intact.
             for table, columns in {
                 'phone_calls': {'ended': 'REAL'},
                 'phone_live_streams': {'last_seen': 'REAL'},
                 'phone_jobs': {'root_id': 'TEXT', 'parent_id': 'TEXT', 'question': "TEXT NOT NULL DEFAULT ''",
-                               'resume_job': 'TEXT', 'followup_allowed': 'INTEGER NOT NULL DEFAULT 0'},
+                               'resume_job': 'TEXT', 'followup_allowed': 'INTEGER NOT NULL DEFAULT 0',
+                               'origin_turn_id': "TEXT NOT NULL DEFAULT ''", 'origin_topic_id': "TEXT NOT NULL DEFAULT ''",
+                               'logical_request_id': 'TEXT', 'idempotency_key': 'TEXT',
+                               'authorization': "TEXT NOT NULL DEFAULT '{}'", 'plan': "TEXT NOT NULL DEFAULT '{}'",
+                               'execution_class': "TEXT NOT NULL DEFAULT 'background_action'",
+                               'notify_policy': "TEXT NOT NULL DEFAULT 'natural_when_relevant'",
+                               'priority': 'INTEGER NOT NULL DEFAULT 60', 'cancel_requested': 'REAL'},
             }.items():
                 present = {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}
                 for name, definition in columns.items():
                     if name not in present:
                         db.execute('ALTER TABLE '+table+' ADD COLUMN '+name+' '+definition)
+            db.execute('CREATE UNIQUE INDEX IF NOT EXISTS phone_job_effect ON phone_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL')
 
     @contextmanager
     def db(self):
@@ -86,16 +98,18 @@ class PhoneStore:
         finally:
             db.close()
 
-    def claim(self):
+    def claim(self, lane='any'):
         import secrets
         now = time.time()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             # Claimed/started work is not replayed after a missing heartbeat.
             # The native worker retains an operation receipt and reconciles it.
-            row = db.execute("""SELECT * FROM phone_jobs j WHERE state='queued'
+            row = db.execute("""SELECT * FROM phone_jobs j WHERE state='queued' AND cancel_requested IS NULL
+                AND (?='any' OR (execution_class='foreground_read')=?)
                 AND NOT EXISTS (SELECT 1 FROM phone_jobs a WHERE a.actor=j.actor
-                  AND a.state IN ('claimed','running')) ORDER BY created LIMIT 1""").fetchone()
+                  AND a.state IN ('claimed','running') AND (?='any' OR (a.execution_class='foreground_read')=?))
+                ORDER BY priority DESC,created LIMIT 1""",(lane,lane=='read',lane,lane=='read')).fetchone()
             if not row:
                 return None
             claim = secrets.token_urlsafe(24)
@@ -104,10 +118,26 @@ class PhoneStore:
                        (row['id'], 'claimed', 'timing', '', 'claimed', int((now-row['created'])*1000), '', now))
             return {**dict(row), 'claim': claim, 'state': 'claimed', 'audio': None}
 
+    def cancel(self, actor, job_id):
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(job_id,actor)).fetchone()
+            if not row:raise ValueError('Unknown task')
+            if row['state']=='resumed' and row['resume_job']:
+                job_id=row['resume_job'];row=db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(job_id,actor)).fetchone()
+            if row['state'] in {'queued','claimed','waiting_for_input'}:
+                db.execute("UPDATE phone_jobs SET state='cancelled',cancel_requested=?,callback_requested=0,updated=? WHERE id=?",(time.time(),time.time(),job_id))
+                db.execute('UPDATE phone_notices SET heard_at=COALESCE(heard_at,?) WHERE job_id=?',(time.time(),job_id))
+                return {'task_id':job_id,'state':'cancelled','effect_cancelled':True}
+            if row['state']=='running':
+                db.execute('UPDATE phone_jobs SET cancel_requested=?,callback_requested=0 WHERE id=?',(time.time(),job_id))
+                return {'task_id':job_id,'state':'cancel_requested','effect_cancelled':False}
+            return {'task_id':job_id,'state':row['state'],'effect_cancelled':row['state']=='cancelled'}
+
     def jobs(self, actor: str):
         with self.db() as db:
             jobs = [dict(r) for r in db.execute("""SELECT j.id,COALESCE(d.caller_text,j.transcript) AS transcript,
-                j.state,j.created,j.updated,j.result,j.error,j.callback_requested,j.question,j.resume_job,j.parent_id FROM phone_jobs j
+                j.state,j.created,j.updated,j.result,j.error,j.callback_requested,j.question,j.resume_job,j.parent_id,j.cancel_requested FROM phone_jobs j
                 LEFT JOIN phone_live_delegations d ON d.job_id=j.id
                 WHERE j.actor=? ORDER BY CASE WHEN j.state='waiting_for_input' THEN 0 ELSE 1 END,j.created DESC LIMIT 100""", (actor,))]
             for job in jobs:
@@ -121,7 +151,7 @@ class PhoneStore:
 
     def notices(self, actor, call_id=''):
         with self.db() as db:
-            return [dict(r) for r in db.execute("""SELECT n.*,j.call_id AS source_call,j.created AS requested_at,
+            return [dict(r) for r in db.execute("""SELECT n.*,j.call_id AS source_call,j.created AS requested_at,j.state,j.notify_policy,
                 COALESCE(d.caller_text,j.transcript) AS request FROM phone_notices n JOIN phone_jobs j ON j.id=n.job_id
                 LEFT JOIN phone_live_delegations d ON d.job_id=j.id
                 WHERE n.actor=? AND (n.heard_at IS NULL OR (n.kind='question' AND COALESCE(n.heard_call,'')!=?))
@@ -164,6 +194,12 @@ class PhoneStore:
                 (identifier,actor,call_id,transcript,now,now,row['root_id'] or row['id'],row['id'],0,row['callback_requested']))
             db.execute('INSERT INTO phone_live_delegations VALUES (?,?,?,?)',
                        (call_id,'continuation:'+identifier,identifier,original+'\n'+answer))
+            auth=json.loads(row['authorization'] or '{}')
+            auth.update(clarification_actor=actor,clarification_time=now,source_job=source_job)
+            db.execute('''UPDATE phone_jobs SET origin_turn_id=?,origin_topic_id=?,logical_request_id=?,idempotency_key=?,
+                authorization=?,notify_policy=? WHERE id=?''',
+                (row['origin_turn_id'],row['origin_topic_id'],row['logical_request_id'] or row['id'],
+                 'continuation:'+row['id'],json.dumps(auth),row['notify_policy'],identifier))
             db.execute("UPDATE phone_jobs SET state='resumed',resume_job=?,updated=? WHERE id=?",(identifier,now,row['id']))
             db.execute('UPDATE phone_notices SET heard_at=COALESCE(heard_at,?),heard_call=COALESCE(heard_call,?) WHERE job_id=?',(now,call_id,row['id']))
             if source_job:

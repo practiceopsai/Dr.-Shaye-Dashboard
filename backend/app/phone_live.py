@@ -21,6 +21,7 @@ from websockets.asyncio.client import connect
 from . import phone
 from .security import contains_phi
 from . import phone_presence as presence
+from .phone_runtime import Runtime, classify_read, silent_completion
 
 router = APIRouter(tags=['Phone'])
 log = logging.getLogger('eli.phone.live')
@@ -40,8 +41,10 @@ varied rhythm and brief pauses. Be conversational and concise. Ask one question 
 a time. Give the answer first. Do not read menus, markdown, or internal diagnostics.
 
 Turn-taking policy: Do not interrupt, backchannel over, or finish the caller's
-sentence. For a task, give ONE short acknowledgment after the caller finishes:
-"On it. I'll report back." Then work silently and keep listening to new requests.
+sentence. Delegate an action, then WAIT for TASK_ACCEPTED before acknowledging
+acceptance. Before that receipt, do not say on it, working on it, saved, sending,
+or promise execution. After TASK_ACCEPTED give ONE short acknowledgment only if
+the caller has the floor available: "Got it." Then work silently and listen.
 Never narrate execution, queue position, elapsed time, or routine progress. Accept
 additional requests while earlier work runs; the caller never has to wait to speak.
 Backend results and clarification questions may arrive later. Hold them until a
@@ -68,7 +71,7 @@ and answers to an existing backend clarification. A quick spoken suggestion or
 explanation is conversation; saving a draft is work. Use what is already recalled
 before retrieving again. Never invent a team member or claim stale data is current.
 A capability question such as "can you call people?" is NOT permission to call.
-For an actual task give one short acknowledgment, then keep conversing silently
+For an actual task wait for durable TASK_ACCEPTED, acknowledge once, then keep conversing silently
 while the backend works. Report only verified receipts, failures and needed answers.
 No callback unless the caller explicitly requests one now. Unheard results and
 questions remain in the app's post-call summary. A voicemail greeting is not a user
@@ -156,6 +159,10 @@ class Conversation:
         self.consumed = set()
         self.delegated = set()
         self.last_input = 0.0
+        self.spans = set()
+        self.turn_id = ''
+        self.last_user_end = -1
+        self.new_turn = False
 
     def append(self, event):
         identifier = event.get('event_id')
@@ -167,10 +174,19 @@ class Conversation:
         if len(self.seen) >= 10000 or len(text) > 6000:
             raise ValueError('transcript_limit')
         self.seen.add(identifier)
+        role='user' if event['type']=='session.input_transcript.delta' else 'assistant'
+        span=(role,event.get('start_ms'),event['end_ms'],text)
+        if span in self.spans:return False
+        self.spans.add(span)
         if event['type'] == 'session.input_transcript.delta':
             self.last_input = time.monotonic()
-        self.fragments.append({'id': identifier, 'role': 'user' if event['type'] == 'session.input_transcript.delta' else 'assistant',
-                               'text': text, 'end_ms': event.get('end_ms', 0)})
+            if not self.turn_id or self.new_turn or event.get('start_ms',0)-self.last_user_end>1500:
+                self.turn_id='turn-'+hashlib.sha256((identifier+str(event.get('start_ms'))).encode()).hexdigest()[:20]
+            self.new_turn=False;self.last_user_end=event['end_ms']
+        else:self.new_turn=True
+        self.fragments.append({'id': identifier, 'role':role,'turn_id':self.turn_id,
+                               'text': text, 'start_ms':event.get('start_ms',0),'end_ms':event['end_ms']})
+        return True
 
     def request(self, offset):
         eligible = sorted((f for f in self.fragments if f['end_ms'] <= offset), key=lambda f: f['end_ms'])
@@ -194,7 +210,7 @@ class Conversation:
         return text, [f['id'] for f in fresh], caller
 
 
-def enqueue(call, delegation_id, transcript, caller_text, *, final=False):
+def enqueue(call, delegation_id, transcript, caller_text, *, final=False, origin_turn_id='', origin_topic_id='', read_plan=None):
     """Atomic, actor-bound and idempotent. Native claim/recovery rules remain in force."""
     with phone.store().db() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -202,6 +218,10 @@ def enqueue(call, delegation_id, transcript, caller_text, *, final=False):
                          (call['id'], delegation_id)).fetchone()
         if old:
             return old['job_id']
+        logical=hashlib.sha256((call['actor']+'\0'+call['id']+'\0'+origin_turn_id).encode()).hexdigest() if origin_turn_id else None
+        if logical:
+            old=db.execute('SELECT id FROM phone_jobs WHERE idempotency_key=?',(logical,)).fetchone()
+            if old:return old['id']
         current = db.execute('SELECT * FROM phone_calls WHERE id=?', (call['id'],)).fetchone()
         if (not current or not current['authenticated'] or current['actor'] != call['actor']
                 or time.time() - current['created'] > (1230 if final else 1200)
@@ -217,6 +237,17 @@ def enqueue(call, delegation_id, transcript, caller_text, *, final=False):
         db.execute("""INSERT INTO phone_jobs(id,actor,call_id,transcript,created,updated,audio_state,root_id,followup_allowed)
             VALUES (?,?,?,?,?,?,'live',?,0)""",(job_id, call['actor'], call['id'], transcript, now, now,job_id))
         db.execute('INSERT INTO phone_live_delegations VALUES (?,?,?,?)', (call['id'], delegation_id, job_id, caller_text))
+        # Authorization to capture this instruction is not authorization for
+        # arbitrary writes. The native policy still validates the exact effect.
+        entry=phone.callers().get(call['actor'],{})
+        authorization={'actor':call['actor'],'user_id':entry.get('user_id'),'call_id':call['id'],
+                       'captured_at':now,'instruction_hash':hashlib.sha256(caller_text.encode()).hexdigest(),
+                       'scope':'capture_only; native exact-action policy required'}
+        db.execute('''UPDATE phone_jobs SET origin_turn_id=?,origin_topic_id=?,logical_request_id=?,idempotency_key=?,
+            authorization=?,plan=?,execution_class=?,priority=?,notify_policy=? WHERE id=?''',
+            (origin_turn_id,origin_topic_id,logical or job_id,logical,json.dumps(authorization),json.dumps(read_plan or {}),
+             'foreground_read' if read_plan else 'background_action',80 if read_plan else 60,
+             'silent_success' if silent_completion(caller_text) else 'natural_when_relevant',job_id))
         return job_id
 
 
@@ -261,6 +292,11 @@ class LiveCall:
         self.machine_detected = False
         self.hangup_delegation = False
         self.context_updated = presence.context_for(call,cfg).get('updated_at')
+        self.runtime=Runtime(call.get('id',''),phone.store())
+        self.last_playback_mark=0.
+        self.last_snapshot=0.
+        self.input_voiced_ms=0.
+        self.unaccepted=set()
         self.callback_notices = set()
         if call.get('outbound_id'):
             with phone.store().db() as db:
@@ -275,7 +311,7 @@ class LiveCall:
             await self.append('thinking', 'Complete backend response follows in consecutive parts. '
                               'Wait for the final instruction before summarizing it.', delegation)
             await self.append('thinking', content, delegation)
-            await self.append('instructions', 'The complete backend response has arrived. Explain its answer briefly '
+            await self.append('commentary', 'The complete backend response has arrived. Explain its answer briefly '
                               'and accurately, including pending approvals, uncertainties and failures. '
                               'Do not claim more than that response confirms.', delegation)
             return
@@ -286,6 +322,7 @@ class LiveCall:
     async def monitor_access(self):
         while True:
             await asyncio.sleep(2)
+            self.runtime.flush()
             with phone.store().db() as db:
                 row = db.execute('SELECT authenticated FROM phone_calls WHERE id=?', (self.call['id'],)).fetchone()
                 db.execute('UPDATE phone_live_streams SET last_seen=? WHERE call_id=?',(time.time(),self.call['id']))
@@ -305,6 +342,7 @@ class LiveCall:
             if event.get('event') == 'stop':
                 return
             if event.get('event') == 'mark':
+                self.runtime.played(event.get('mark',{}).get('name',''))
                 if self.active_notice and self.notice_mark and event.get('mark',{}).get('name')==self.notice_mark:
                     phone.store().heard(self.active_notice['job_id'],self.call['actor'],self.call['id'])
                     self.delivered_notices.add(self.active_notice['job_id'])
@@ -313,6 +351,10 @@ class LiveCall:
                     self.last_notice=time.monotonic()
                 continue
             if event.get('event') == 'media':
+                sequence=int(event.get('sequenceNumber',0))
+                if sequence and sequence<=self.runtime.last_input_seq:
+                    self.runtime.event('audio.input_discarded',status='sequence_replay');continue
+                if sequence:self.runtime.last_input_seq=sequence
                 media = event.get('media', {})
                 payload = media.get('payload', '')
                 if media.get('track') != 'inbound' or not isinstance(payload, str) or len(payload) > 32000:
@@ -323,12 +365,15 @@ class LiveCall:
                 # committing a task. GPT-Live still controls conversational turn taking.
                 if samples and sum(MULAW_ENERGY[x] for x in samples) / len(samples) > 200 ** 2:
                     if time.monotonic()-self.last_speech>.35:
+                        self.runtime.floor='user'
+                        self.runtime.event('speech.user.started')
                         # Twilio buffers audio. Clear queued speech on barge-in;
                         # marks from cleared audio are NOT proof it was heard.
                         if self.active_notice:
                             self.voice_metric(self.active_notice['job_id'],'interrupted')
                             self.delivered_notices.add(self.active_notice['job_id'])
                         if time.monotonic()-self.last_output<1:
+                            self.runtime.interrupt()
                             self.interrupted=True
                             if time.monotonic()-self.last_recovery>8:
                                 self.last_recovery=time.monotonic()
@@ -339,6 +384,10 @@ class LiveCall:
                         self.active_notice=None
                         await self.ws.send_json({'event':'clear','streamSid':self.stream_id})
                     self.last_speech = time.monotonic()
+                    self.runtime.last_user_end=self.last_speech
+                elif self.runtime.floor=='user' and time.monotonic()-self.last_speech>.35:
+                    self.runtime.floor='none'
+                    self.runtime.event('speech.user.paused',status='acoustic_not_final')
                 await self.send({'type': 'session.input_audio.append', 'audio': payload})
 
     async def receive_model(self):
@@ -359,14 +408,30 @@ class LiveCall:
                 voiced=bool(samples and sum(MULAW_ENERGY[x] for x in samples)/len(samples)>100**2)
                 if voiced:
                     self.last_output=time.monotonic()
-                if time.monotonic()-self.last_speech>=.35:
+                allowed=self.runtime.audio_allowed(event,voiced,len(samples)/8,time.monotonic()-self.last_speech<.35)
+                if self.unaccepted and voiced:allowed=False
+                if allowed:
+                    if voiced:
+                        self.runtime.floor='eli'
+                        if not self.runtime.first_audio:
+                            self.runtime.first_audio=True
+                            self.runtime.response_id='speech-'+str(self.runtime.sequence+1)
+                            self.runtime.event('response.first_audio',duration_ms=(time.monotonic()-self.runtime.last_user_end)*1000 if self.runtime.last_user_end else 0)
                     if voiced and self.active_notice:
                         self.notice_audio=True
                     await self.ws.send_json({'event': 'media', 'streamSid': self.stream_id,
                                              'media': {'payload': event['delta']}})
+                    if voiced and time.monotonic()-self.last_playback_mark>=.2:
+                        self.last_playback_mark=time.monotonic()
+                        name='audio-'+secrets.token_hex(8);self.runtime.mark(name)
+                        await self.ws.send_json({'event':'mark','streamSid':self.stream_id,'mark':{'name':name}})
+                elif voiced:
+                    self.runtime.cancelled_spans.append((self.runtime.output_end-len(samples)/8,self.runtime.output_end))
             elif kind in {'session.input_transcript.delta', 'session.output_transcript.delta'}:
-                self.conversation.append(event)
+                if not self.conversation.append(event):
+                    self.runtime.event('transcript.duplicate');continue
                 if kind=='session.input_transcript.delta':
+                    self.runtime.user_turn(self.conversation.turn_id,self.latest_caller())
                     latest=self.latest_caller()
                     if presence.stop_calls(latest):
                         presence.revoke_callbacks(self.call['actor'])
@@ -375,6 +440,7 @@ class LiveCall:
                         await self.ws.send_json({'event':'clear','streamSid':self.stream_id})
                         return
                 if kind=='session.output_transcript.delta':
+                    self.runtime.last_generated=event.get('delta','')
                     if self.active_notice:
                         self.notice_text=True
             elif kind == 'session.delegation.created':
@@ -383,6 +449,8 @@ class LiveCall:
                 if delegation.get('target') != 'client' or not isinstance(identifier, str) or len(identifier) > 200:
                     raise ValueError('invalid_delegation')
                 if identifier not in self.delegations:
+                    self.runtime.event('tool.delegated')
+                    self.unaccepted.add(identifier)
                     self.delegations.add(identifier)
                     task = asyncio.create_task(self.delegate(identifier, event['offset_ms']))
                     self.tasks.add(task)
@@ -429,10 +497,24 @@ class LiveCall:
                     await self.append('thinking','No task was created. Answer this question directly from your supplied Eli context. '
                                       'If the team roster is partial, say which members you can verify; never invent the rest.',identifier)
                     return
-                job_id = enqueue(self.call, identifier, transcript, caller_text)
+                # Explicit cancellation of the immediately preceding task must
+                # not wait behind that task in the same worker queue.
+                if re.fullmatch(r'\s*(?:please\s+)?(?:cancel|stop|don.t send|do not send)\s+(?:that|that task|the last task)[.!?]*\s*',caller_text,re.I) and self.last_job:
+                    outcome=phone.store().cancel(self.call['actor'],self.last_job)
+                    self.runtime.event('task.cancel_requested',task_id=self.last_job,status=outcome['state'])
+                    self.conversation.consumed.update(consumed)
+                    await self.append('thinking','Verified cancellation state: '+json.dumps(outcome)+'. Never claim an in-flight effect was undone.',identifier)
+                    return
+                origin=next((f.get('turn_id','') for f in self.conversation.fragments if f['id'] in consumed),'')
+                plan=classify_read(caller_text) if getattr(self.cfg,'phone_fast_reads_enabled',False) else None
+                job_id = enqueue(self.call, identifier, transcript, caller_text,origin_turn_id=origin,
+                                 origin_topic_id=self.runtime.topic_id,read_plan=plan)
+                self.runtime.pending[job_id]=origin
+                self.runtime.event('task.persisted',task_id=job_id,status='foreground_read' if plan else 'background_action')
                 self.last_job = job_id
                 self.conversation.consumed.update(consumed)
-                self.conversation.delegated.update(consumed)
+                if not plan:self.conversation.delegated.update(consumed)
+                self.unaccepted.discard(identifier)
             await self.acknowledge(identifier, job_id)
         except asyncio.CancelledError:
             # Only stop polling/audio. The durable native job remains untouched.
@@ -442,6 +524,8 @@ class LiveCall:
                               'Do not interrupt or claim it was saved. Patient information needs a compliant workflow.', identifier)
         except Exception:
             log.warning('Live phone delegation delivery interrupted; existing work retained')
+        finally:
+            self.unaccepted.discard(identifier)
 
     def quiet(self):
         now=time.monotonic()
@@ -483,11 +567,13 @@ class LiveCall:
         self.acknowledged.add(job_id)
         if not self.ending:
             self.last_notice=time.monotonic()
-            # The voice model owns the one natural acknowledgment. A second
-            # spoken/instruction event races its transcript and duplicates it.
-            await self.append('thinking', 'This request is durably accepted and working in the background. '
-                              'Your normal one acknowledgment is sufficient; do not add or repeat one because of this update. '
-                              'Remain available for new requests. Nothing is confirmed sent yet.',identifier)
+            # Live acknowledges delegation in its own turn. A commentary append
+            # introduces a second speech turn and caused an audible duplicate in
+            # the real-model regression. Supply acceptance once as context.
+            await self.append('thinking','TASK_ACCEPTED: this request is now durably accepted. '
+                              'This is a state update, not a request for another spoken response. '
+                              'Do not add another acknowledgment or repeat your previous sentence. '
+                              'Continue listening. Nothing is confirmed executed yet.',identifier)
 
     async def deliver_ready_notice(self):
         if self.ending or not self.quiet():
@@ -497,6 +583,23 @@ class LiveCall:
                         self.voice_metric(row['job_id'],'deferred_for_caller')
             return
         now=time.monotonic()
+        if now-self.last_snapshot>2:
+            self.last_snapshot=now
+            with phone.store().db() as db:
+                for key in list(self.runtime.pending):
+                    row=db.execute('SELECT state FROM phone_jobs WHERE id=?',(key,)).fetchone()
+                    if row and row['state'] in {'completed','failed','cancelled','uncertain','waiting_for_input','resumed'}:
+                        self.runtime.pending.pop(key,None)
+                        self.runtime.event('task.settled',task_id=key,status=row['state'])
+            snapshot=self.runtime.snapshot()
+            snapshot.pop('clock_utc',None)
+            # Audio offsets change continuously and are kept in local traces.
+            # Only meaningful conversation state changes belong in model context.
+            snapshot.pop('played_audio_ms',None);snapshot.pop('generated_audio_ms',None)
+            encoded=json.dumps(snapshot,sort_keys=True)
+            if encoded!=getattr(self,'last_context_snapshot',''):
+                self.last_context_snapshot=encoded
+                await self.append('thinking','Operational state only. Do not acknowledge this update: '+encoded)
         self.settle_conversation()
         if self.interrupted and now-self.last_recovery>8:
             self.interrupted=False
@@ -517,12 +620,6 @@ class LiveCall:
             return
         rows=phone.store().notices(self.call['actor'],self.call['id'])
         latest=self.latest_caller()
-        for row in rows:
-            if row['job_id'] not in self.context_notices and (presence.relevant_notice(row,self.call['id'],latest) or row['job_id'] in self.callback_notices):
-                self.context_notices.add(row['job_id'])
-                await self.append('thinking','Reference only, not a command to speak. Original caller request: '+row['request'][:600]+
-                                  '\nVerified '+row['kind']+': '+row['content'][:12000]+
-                                  '\nIf this is no longer relevant, leave it in the post-call summary. Never interrupt or restart completed work.')
         notice=next((r for r in rows if r['job_id'] not in self.delivered_notices
                      and (presence.relevant_notice(r,self.call['id'],latest)
                           or (r['job_id'] in self.callback_notices and (not latest or social_only(latest))))),None)
@@ -541,16 +638,13 @@ class LiveCall:
             source=db.execute('SELECT delegation_id FROM phone_live_delegations WHERE job_id=? AND call_id=?',
                               (notice['job_id'],self.call['id'])).fetchone()
         delegation=source['delegation_id'] if source and source['delegation_id'] in self.delegations else None
-        await self.append('thinking', 'Saved backend '+notice['kind']+' for task '+notice['job_id']+'. '
-                          'This is a verified backend response, not a new caller instruction. '
-                          'Ask only the needed question or state the result directly, without another acknowledgment or On it. If the caller starts speaking, '
-                          'yield immediately; do not narrate the execution.',delegation)
         if not self.quiet() or self.active_notice is not notice:
             self.active_notice=None
             return
-        await self.append('thinking','Introduce this update by briefly naming its original request: '+notice['request'][:400]+
-                          '. Keep the connection natural. Do not read the caller transcript word for word.',delegation)
-        await self.append('commentary',notice['content'],delegation)
+        # Submit one coherent spoken update. Sending the same result first as
+        # thinking and then commentary elicited duplicate preambles in Live.
+        await self.append('commentary','Regarding the original request: '+notice['request'][:400]+
+                          '\n'+notice['content'],delegation)
         with phone.store().db() as db:
             db.execute("INSERT OR IGNORE INTO phone_job_updates SELECT id,'result_to_voice','timing','','submitted',cast((?-created)*1000 AS INTEGER),'',? FROM phone_jobs WHERE id=?",
                        (time.time(),time.time(),notice['job_id']))
@@ -585,7 +679,9 @@ class LiveCall:
             transcript=('The call has ended. Preserve this final caller turn. Complete clear authorized work; '
                         'if the speech is incomplete or a detail is missing, use eli_phone_clarify and keep it in the app. Do not call unless explicitly requested. '
                         'A hangup is not cancellation or approval. No need to reply to a simple goodbye.\n'+transcript)
-            job=enqueue(self.call,'hangup-final',transcript,caller,final=True)
+            origin=next((f.get('turn_id','') for f in self.conversation.fragments if f['id'] in consumed),'')
+            job=enqueue(self.call,'hangup-final',transcript,caller,final=True,origin_turn_id=origin,
+                        origin_topic_id=self.runtime.topic_id)
             self.conversation.consumed.update(consumed)
             self.conversation.delegated.update(consumed)
             self.last_job=job
@@ -625,7 +721,13 @@ class LiveCall:
             except ValueError:
                 log.warning('Final phone turn requires review; it was not executed')
             if not self.machine_detected:
+                for f in self.conversation.fragments:
+                    if f['role']=='assistant':
+                        f['playback']='played' if self.runtime.heard_fragment(f.get('start_ms',0),f['end_ms']) else 'unconfirmed'
                 presence.archive(self.call,self.conversation.fragments,self.cfg.phone_live_model,self.conversation.delegated)
+            self.runtime.connection='closed'
+            self.runtime.event('session.closed')
+            self.runtime.flush()
 
 
 @router.websocket(PATH)
