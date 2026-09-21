@@ -110,10 +110,11 @@ def test_result_and_question_are_held_while_caller_speaks(configured):
     voice.conversation.last_input=0
     voice.last_speech=time.monotonic()
     asyncio.run(voice.deliver_ready_notice())
-    assert model.sent==[]
+    assert all(e['type']=='session.thinking.append' for e in model.sent)
     voice.last_speech=0
     asyncio.run(voice.deliver_ready_notice())
-    spoken=[e for e in model.sent if e['type']=='session.commentary.append']
+    assert not any(e['type']=='session.commentary.append' for e in model.sent)
+    spoken=[e for e in model.sent if e['type']=='session.thinking.append']
     assert len(spoken)==1 and spoken[0]['content'].endswith('What should I say?')
     assert 'Email Fabio.' in spoken[0]['content']
     assert phone.store().notices(call['actor'])[0]['heard_at'] is None
@@ -157,7 +158,7 @@ def test_hangup_captures_last_unsettled_turn_once(configured):
     voice.conversation.append(fragment('last','Email Fabio.',end=599900))
     voice.save_final_request();voice.save_final_request()
     jobs=phone.store().jobs(call['actor'])
-    assert len(jobs)==1 and jobs[0]['state']=='queued'
+    assert len(jobs)==1 and jobs[0]['state']=='planning'
     with phone.store().db() as db:
         assert 'if the speech is incomplete' in db.execute('SELECT transcript FROM phone_jobs').fetchone()[0]
 

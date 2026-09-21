@@ -11,7 +11,7 @@ from xml.etree import ElementTree
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from app import phone, phone_live as live
+from app import phone, phone_live as live, phone_dispatch as dispatch
 from test_phone import setup, signed, path_for_gather
 
 CALL = 'CA' + '2' * 32
@@ -198,6 +198,9 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
         deadline = time.monotonic() + 5
         job = None
         while not job and time.monotonic() < deadline:
+            intake=dispatch.take_intake()
+            if intake:
+                dispatch.commit_plan(intake, {'conversation_only':False,'jobs':[{'scope':'Draft meeting steps', 'quotes':['Draft two meeting preparation steps. Do not send anything.'], 'kind':'draft','after':[]}]})
             job = client.post('/internal/phone/claim', headers=headers).json()['job']
             if not job: time.sleep(.05)
         assert job and job['actor'] == 'owner@example.com'
@@ -205,18 +208,11 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
         reply = client.post('/internal/phone/jobs/' + job['id'], headers=headers,
                             json={'claim': job['claim'], 'state': 'completed', 'result': 'Set an agenda and review the notes.'})
         assert reply.status_code == 200
-        acknowledgments = 0
-        while True:
-            output=ws.receive_json()
-            if output.get('event')=='mark':
-                ws.send_json(output)
-                continue
-            if output['media']['payload']=='YWNr':
-                acknowledgments += 1
-                assert acknowledgments == 1
-                continue
-            assert output['media']['payload']=='cmVzdWx0'
-            break
+        deadline=time.monotonic()+5
+        while not any('Background task state' in e.get('content','') for e in model.sent) and time.monotonic()<deadline:
+            time.sleep(.05)
+        assert any('Set an agenda' in e.get('content','') for e in model.sent)
+        assert not any(e['type']=='session.commentary.append' for e in model.sent)
         ws.send_json({'event': 'stop', 'streamSid': STREAM})
         with pytest.raises(WebSocketDisconnect):
             while True:ws.receive_json()  # Playout marks can already be queued.
@@ -226,15 +222,14 @@ def test_stream_audio_native_receipt_and_graceful_hangup(configured, monkeypatch
     assert phone.store().jobs('owner@example.com')[0]['transcript'] == 'Draft two meeting preparation steps. Do not send anything.'
 
 
-def test_long_results_are_not_spoken_before_complete_context(configured):
-    cfg, _ = configured
-    model = FakeModel()
-    call = live.LiveCall(None, model, cfg, {}, STREAM)
-    asyncio.run(call.append('commentary', 'x' * 1200 + ' Action has not been approved.', 'd1'))
-    assert all(len(e['content']) <= 500 for e in model.sent)
-    assert sum(e['type'] == 'session.commentary.append' for e in model.sent)==1
-    assert model.sent[-1]['type'] == 'session.commentary.append'
-    assert 'pending approvals' in model.sent[-1]['content']
+def test_context_updates_cannot_force_a_speech_turn(configured):
+    cfg,_=configured
+    model=FakeModel();call=live.LiveCall(None,model,cfg,{},STREAM)
+    with pytest.raises(ValueError,match='owns speech'):
+        asyncio.run(call.append('commentary','Read this result aloud.','d1'))
+    asyncio.run(call.append('thinking','x'*1200+' Action has not been approved.','d1'))
+    assert all(len(e['content'])<=500 for e in model.sent)
+    assert all(e['type']=='session.thinking.append' for e in model.sent)
 
 
 def test_progress_claim_auth_deduplication_and_patient_boundary(configured):
@@ -279,8 +274,9 @@ def test_silent_work_and_completion_after_old_90_second_cutoff(configured,monkey
     assert not any('waiting behind' in s or 'still working' in s for s in spoken)
     assert 'The email send is confirmed.' not in spoken
     assert not any(e['type']=='session.instructions.append' for e in model.sent)
-    assert len([e for e in model.sent if 'durably accepted' in e['content']])==1
-    assert 'The task is complete.' in spoken[-1]
+    assert len([e for e in model.sent if 'TASK_ACCEPTED' in e['content']])==1
+    assert not spoken
+    assert any('The task is complete.' in e['content'] for e in model.sent)
     assert clock.now>=106
     assert len(spoken)<10
 
@@ -310,4 +306,4 @@ def test_existing_spoken_acknowledgment_is_not_repeated(configured):
     live_call.conversation.append(fragment('a1',"I'm checking now.",end=1500,role='assistant'))
     asyncio.run(live_call.wait_for_result('ack-test',job_id))
     assert not any(e['type']=='session.instructions.append' for e in model.sent)
-    assert any(e['event_id']=='result_to_voice' for e in phone.store().updates(job_id))
+    assert any(e['status']=='context_updated' for e in phone.store().updates(job_id))

@@ -20,6 +20,18 @@ messaging = sys.modules['phone_unit.messaging']
 
 
 class OperationsTests(unittest.TestCase):
+    def test_atomic_job_cannot_send_sibling_channel(self):
+        self.job['plan']=json.dumps({'atomic_kind':'imessage','atomic_scope':'Text Fabio'})
+        with patch.object(performance,'current',return_value=(self.perf,self.job,self.quote)):
+            result=performance.before_tool(self.settings,tool_name='eli_phone_send_email',args={})
+        self.assertTrue(result['block'])
+
+    def test_draft_job_cannot_send_a_message(self):
+        self.job['plan']=json.dumps({'atomic_kind':'draft','atomic_scope':'Draft email'})
+        with patch.object(performance,'current',return_value=(self.perf,self.job,self.quote)):
+            result=performance.before_tool(self.settings,tool_name='email_send',args={})
+        self.assertTrue(result['block'])
+
     def test_mail_uses_loaded_plugin_instance_instead_of_directory_import(self):
         registry_module=ModuleType('tools.registry')
         factory=Mock(return_value='existing-service')

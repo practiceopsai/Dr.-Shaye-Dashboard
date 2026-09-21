@@ -2,6 +2,8 @@
 import json
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from . import phone
 from .security import contains_phi
@@ -19,7 +21,18 @@ def stop_calls(text):
 
 def known_question(text):
     """Narrow repair for an unnecessary model delegation; not a general classifier."""
-    return bool(re.search(r'\b(?:what (?:ai )?model|what.s your name|what is your name|who are you|who (?:do you|you) work for|what (?:is your job|can you do)|who(?:.s| is| are).*\bteam|who am i|what.s my name)\b', text, re.I)) and not work_requested(text)
+    return bool(re.search(r'\b(?:what (?:ai )?model|what.s your name|what is your name|who are you|who (?:do you|you) work for|what (?:is your job|can you do)|who(?:.s| is| are).*\bteam|who am i|what.s my name|what (?:time|day|date) is it|what.s (?:today.s date|the time)|what day is today)\b', text, re.I)) and not work_requested(text)
+
+
+def clock_facts(cfg):
+    zone=getattr(cfg,'dashboard_timezone','America/Los_Angeles')
+    return {'current_datetime':datetime.now(ZoneInfo(zone)).isoformat(timespec='seconds'),
+            'timezone':zone,'clock_scope':'Practice timezone; do not assume the caller is in this timezone.'}
+
+
+def local_facts(call,cfg):
+    context=context_for(call,cfg)
+    return {k:v for k,v in context.items() if k not in {'phone_work','recent_phone_dialogue'}}
 
 
 def work_requested(text):
@@ -43,11 +56,12 @@ def context_for(call, cfg):
     facts = {'caller': entry.get('name', ''), 'voice_model': cfg.phone_live_model,
              'voice': cfg.phone_voice, 'identity': "Eli, Dr. Omid Shaye's AI chief of staff",
              'phone_policy': 'No access code. Work survives hangup. No callback unless explicitly requested. Text means iMessage; WhatsApp only when named.'}
+    facts.update(clock_facts(cfg))
     with phone.store().db() as db:
         row = db.execute('SELECT * FROM phone_voice_context WHERE actor=?', (call.get('actor',''),)).fetchone()
         facts['phone_work']=[dict(r) for r in db.execute('''SELECT COALESCE(d.caller_text,j.transcript) request,j.state,
             substr(j.result,1,600) verified_result,j.question FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-            WHERE j.actor=? AND j.created>? ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
+            WHERE j.actor=? AND j.created>? AND j.state!='expanded' ORDER BY j.created DESC LIMIT 8''',(call.get('actor',''),time.time()-86400))]
         # Unconfirmed generated speech remains in the private audit archive.
         # Reinjecting it into new calls recycles unheard answers and apology loops.
     if row and row['user_id'] == entry.get('user_id') and time.time()-row['updated'] < 300:
@@ -108,7 +122,7 @@ def summaries(actor):
         for c in calls:
             items = [dict(r) for r in db.execute('''SELECT j.id,COALESCE(d.caller_text,j.transcript) request,j.state,j.result,j.error,j.question,
                 n.heard_at FROM phone_jobs j LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-                LEFT JOIN phone_notices n ON n.job_id=j.id WHERE j.call_id=? AND j.actor=? ORDER BY j.created''', (c['id'],actor))]
+                LEFT JOIN phone_notices n ON n.job_id=j.id WHERE j.call_id=? AND j.actor=? AND j.state!='expanded' ORDER BY j.created''', (c['id'],actor))]
             if items:
                 output.append({**dict(c),'items':items})
         return output

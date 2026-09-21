@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     phone_trial_proxy_enabled: bool = False
     phone_live_enabled: bool = False
     phone_fast_reads_enabled: bool = False
+    phone_dispatch_model: str = "gpt-5.6-luna"
     phone_pin_required: bool = False
     phone_followup_mode: str = "app"
     phone_live_model: str = "gpt-live-1"

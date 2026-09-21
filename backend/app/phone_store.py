@@ -86,6 +86,13 @@ class PhoneStore:
                     if name not in present:
                         db.execute('ALTER TABLE '+table+' ADD COLUMN '+name+' '+definition)
             db.execute('CREATE UNIQUE INDEX IF NOT EXISTS phone_job_effect ON phone_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL')
+            for name, definition in {
+                'batch_id': 'TEXT', 'resource_key': "TEXT NOT NULL DEFAULT 'global'",
+                'depends_on': "TEXT NOT NULL DEFAULT '[]'", 'plan_lease': 'REAL',
+                'plan_attempts': 'INTEGER NOT NULL DEFAULT 0',
+            }.items():
+                if name not in {r['name'] for r in db.execute('PRAGMA table_info(phone_jobs)')}:
+                    db.execute('ALTER TABLE phone_jobs ADD COLUMN '+name+' '+definition)
 
     @contextmanager
     def db(self):
@@ -108,7 +115,11 @@ class PhoneStore:
             row = db.execute("""SELECT * FROM phone_jobs j WHERE state='queued' AND cancel_requested IS NULL
                 AND (?='any' OR (execution_class='foreground_read')=?)
                 AND NOT EXISTS (SELECT 1 FROM phone_jobs a WHERE a.actor=j.actor
-                  AND a.state IN ('claimed','running') AND (?='any' OR (a.execution_class='foreground_read')=?))
+                  AND a.state IN ('claimed','running') AND (?='any' OR (a.execution_class='foreground_read')=?)
+                  AND (a.resource_key='global' OR j.resource_key='global' OR a.resource_key=j.resource_key))
+                AND NOT EXISTS (SELECT 1 FROM json_each(j.depends_on) dep
+                  WHERE NOT EXISTS (SELECT 1 FROM phone_jobs p WHERE
+                    COALESCE(p.root_id,p.id)=dep.value AND p.state='completed'))
                 ORDER BY priority DESC,created LIMIT 1""",(lane,lane=='read',lane,lane=='read')).fetchone()
             if not row:
                 return None
@@ -125,7 +136,15 @@ class PhoneStore:
             if not row:raise ValueError('Unknown task')
             if row['state']=='resumed' and row['resume_job']:
                 job_id=row['resume_job'];row=db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(job_id,actor)).fetchone()
-            if row['state'] in {'queued','claimed','waiting_for_input'}:
+            if row['state']=='expanded':
+                children=db.execute('SELECT id,state FROM phone_jobs WHERE batch_id=?',(job_id,)).fetchall()
+                for child in children:
+                    if child['state'] in {'queued','claimed','waiting_for_input'}:
+                        db.execute("UPDATE phone_jobs SET state='cancelled',cancel_requested=?,updated=? WHERE id=?",(time.time(),time.time(),child['id']))
+                    elif child['state']=='running':
+                        db.execute('UPDATE phone_jobs SET cancel_requested=? WHERE id=?',(time.time(),child['id']))
+                return {'task_id':job_id,'state':'cancel_requested','effect_cancelled':False}
+            if row['state'] in {'queued','claimed','waiting_for_input','planning'}:
                 db.execute("UPDATE phone_jobs SET state='cancelled',cancel_requested=?,callback_requested=0,updated=? WHERE id=?",(time.time(),time.time(),job_id))
                 db.execute('UPDATE phone_notices SET heard_at=COALESCE(heard_at,?) WHERE job_id=?',(time.time(),job_id))
                 return {'task_id':job_id,'state':'cancelled','effect_cancelled':True}
@@ -139,7 +158,7 @@ class PhoneStore:
             jobs = [dict(r) for r in db.execute("""SELECT j.id,COALESCE(d.caller_text,j.transcript) AS transcript,
                 j.state,j.created,j.updated,j.result,j.error,j.callback_requested,j.question,j.resume_job,j.parent_id,j.cancel_requested FROM phone_jobs j
                 LEFT JOIN phone_live_delegations d ON d.job_id=j.id
-                WHERE j.actor=? ORDER BY CASE WHEN j.state='waiting_for_input' THEN 0 ELSE 1 END,j.created DESC LIMIT 100""", (actor,))]
+                WHERE j.actor=? AND j.state!='expanded' ORDER BY CASE WHEN j.state='waiting_for_input' THEN 0 ELSE 1 END,j.created DESC LIMIT 100""", (actor,))]
             for job in jobs:
                 job['actions'] = [dict(r) for r in db.execute("SELECT event_id,status,content FROM phone_job_updates WHERE job_id=? AND kind='action' ORDER BY created,event_id", (job['id'],))]
         return jobs
@@ -149,14 +168,15 @@ class PhoneStore:
             return [dict(r) for r in db.execute("""SELECT id,question,root_id FROM phone_jobs
                 WHERE actor=? AND state='waiting_for_input' ORDER BY created LIMIT 32""", (actor,))]
 
-    def notices(self, actor, call_id=''):
+    def notices(self, actor, call_id='', *, current_only=False):
         with self.db() as db:
             return [dict(r) for r in db.execute("""SELECT n.*,j.call_id AS source_call,j.created AS requested_at,j.state,j.notify_policy,
                 COALESCE(d.caller_text,j.transcript) AS request FROM phone_notices n JOIN phone_jobs j ON j.id=n.job_id
                 LEFT JOIN phone_live_delegations d ON d.job_id=j.id
                 WHERE n.actor=? AND (n.heard_at IS NULL OR (n.kind='question' AND COALESCE(n.heard_call,'')!=?))
+                AND (?='' OR j.call_id=? OR n.followup_id=(SELECT outbound_id FROM phone_calls WHERE id=?))
                 AND j.state IN ('completed','waiting_for_input','failed','uncertain')
-                ORDER BY CASE WHEN n.kind='question' THEN 0 ELSE 1 END,n.created LIMIT 32""", (actor,call_id))]
+                ORDER BY CASE WHEN n.kind='question' THEN 0 ELSE 1 END,n.created LIMIT 32""", (actor,call_id,call_id if current_only else '',call_id,call_id))]
 
     def heard(self, job_id, actor, call_id):
         with self.db() as db:
@@ -200,6 +220,10 @@ class PhoneStore:
                 authorization=?,notify_policy=? WHERE id=?''',
                 (row['origin_turn_id'],row['origin_topic_id'],row['logical_request_id'] or row['id'],
                  'continuation:'+row['id'],json.dumps(auth),row['notify_policy'],identifier))
+            db.execute('UPDATE phone_jobs SET batch_id=?,resource_key=?,depends_on=?,plan=? WHERE id=?',
+                       (row['batch_id'],row['resource_key'],row['depends_on'],row['plan'],identifier))
+            if row['execution_class']=='intake':
+                db.execute("UPDATE phone_jobs SET state='planning',execution_class='intake' WHERE id=?",(identifier,))
             db.execute("UPDATE phone_jobs SET state='resumed',resume_job=?,updated=? WHERE id=?",(identifier,now,row['id']))
             db.execute('UPDATE phone_notices SET heard_at=COALESCE(heard_at,?),heard_call=COALESCE(heard_call,?) WHERE job_id=?',(now,call_id,row['id']))
             if source_job:

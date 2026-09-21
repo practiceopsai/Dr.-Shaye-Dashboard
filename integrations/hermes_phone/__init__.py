@@ -244,6 +244,10 @@ class PhoneAdapter(BasePlatformAdapter):
             chat_id='phone:'+user_id
             if self._is_sender_authorized(user_id,'dm',chat_id) is not True:
                 raise PermissionError('Phone caller is not authorized by the gateway')
+            # Independent jobs cannot share the gateway's conversation lock or
+            # mutable model history. Continuations reuse the same root session.
+            # User/platform identity remains unchanged for persona/RAG policy.
+            chat_id+=':job:'+str(job.get('root_id') or job['id'])
             if not self._message_handler:
                 raise RuntimeError('Gateway is not ready')
             try:

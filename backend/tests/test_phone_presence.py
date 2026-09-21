@@ -57,8 +57,9 @@ def test_old_topic_result_is_silent_then_reintroduced_with_origin(configured):
     v.conversation.append(fragment('a','Let us discuss the trip.',2000,'assistant'))
     v.conversation.append(fragment('u2','Any updates on the email to Fabio?',3000));v.conversation.last_input=0
     asyncio.run(v.deliver_ready_notice())
-    assert any(e['type']=='session.commentary.append' for e in v.upstream.sent)
-    assert any('original request: Email Fabio.' in e['content'] for e in v.upstream.sent)
+    assert not any(e['type']=='session.commentary.append' for e in v.upstream.sent)
+    assert len(v.context_notices)==1
+    assert any('Original request: Email Fabio.' in e['content'] for e in v.upstream.sent)
 
 
 def test_old_call_notice_is_not_blurted_at_next_greeting(configured):

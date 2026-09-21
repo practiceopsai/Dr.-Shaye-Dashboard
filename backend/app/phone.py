@@ -478,6 +478,9 @@ def claim_job(options: ClaimOptions = ClaimOptions()):
             job['delivery_feedback']=[dict(r) for r in db.execute("""SELECT u.status,count(*) AS count
                 FROM phone_job_updates u JOIN phone_jobs j ON j.id=u.job_id
                 WHERE j.actor=? AND u.tool='voice_delivery' AND u.created>? GROUP BY u.status""",(job['actor'],time.time()-7*86400))]
+            job['dependency_results']=[dict(r) for r in db.execute('''SELECT p.id,p.result FROM json_each(?) dep
+                JOIN phone_jobs p ON COALESCE(p.root_id,p.id)=dep.value
+                WHERE p.actor=? AND p.state='completed' ''',(job.get('depends_on','[]'),job['actor']))]
     return {'job': job}
 
 

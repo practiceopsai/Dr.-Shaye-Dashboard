@@ -16,6 +16,7 @@ from .outbox import PendingMap
 from .phone_preview import router as phone_preview_router
 from .phone import router as phone_router, phone_worker
 from .phone_live import router as phone_live_router
+from .phone_dispatch import worker as phone_dispatch_worker
 from .security import AuthUser, contains_phi, payload_hash, require_auth
 
 
@@ -26,6 +27,7 @@ settings = get_settings()
 async def lifespan(app):
     task = asyncio.create_task(_refresh_loop()) if settings.background_refresh_enabled else None
     phone_task = asyncio.create_task(phone_worker()) if settings.phone_enabled else None
+    dispatch_task = asyncio.create_task(phone_dispatch_worker()) if settings.phone_enabled else None
     try:
         yield
     finally:
@@ -35,6 +37,9 @@ async def lifespan(app):
         if phone_task:
             phone_task.cancel()
             await asyncio.gather(phone_task, return_exceptions=True)
+        if dispatch_task:
+            dispatch_task.cancel()
+            await asyncio.gather(dispatch_task, return_exceptions=True)
 
 
 app = FastAPI(title="Eli Command Center API", version="1.1.0", lifespan=lifespan)
