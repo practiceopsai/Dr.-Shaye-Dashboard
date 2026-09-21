@@ -418,6 +418,7 @@ def private_audio(kind: str, identifier: str, expires: int, token: str):
 
 @router.get('/api/phone/access')
 def phone_access(response: Response, user: AuthUser = Depends(require_auth)):
+    from .phone_presence import summaries
     entry = owner_entry(user)
     with store().db() as db:
         access = db.execute('SELECT pin_hash FROM phone_access WHERE actor=?', (user.email,)).fetchone()
@@ -428,10 +429,10 @@ def phone_access(response: Response, user: AuthUser = Depends(require_auth)):
             'webhook_url': voice_url('/api/phone/incoming', actor=user.email),
             'pin_configured': bool(access and access['pin_hash']),
             'pin_required': getattr(settings(), 'phone_pin_required', False),
-            'followup_mode': getattr(settings(), 'phone_followup_mode', 'callback'),
+            'followup_mode': 'app',
             'bridge_online': bool(bridge and time.time()-bridge['seen'] < 30),
             'outbound_enabled': settings().phone_outbound_enabled,
-            'jobs': store().jobs(user.email), 'outbound': store().outbound(user.email)}
+            'jobs': store().jobs(user.email), 'outbound': store().outbound(user.email), 'summaries': summaries(user.email)}
 
 
 @router.post('/api/phone/access/pin')
@@ -600,6 +601,57 @@ class BridgeProposal(OutboundProposal):
 
 class BridgeActor(BaseModel):
     actor: str
+
+
+class VoiceContext(BaseModel):
+    actor: str
+    user_id: str
+    packet: dict
+
+
+class PresenceSync(BaseModel):
+    contexts: list[VoiceContext] = Field(default_factory=list, max_length=10)
+    archived: list[str] = Field(default_factory=list, max_length=10)
+
+
+@router.post('/internal/phone/presence', dependencies=[Depends(bridge_auth)])
+def presence_sync(update: PresenceSync):
+    with store().db() as db:
+        for item in update.contexts:
+            entry=callers().get(item.actor)
+            if not entry or entry['user_id']!=item.user_id:
+                raise HTTPException(403)
+            packet=json.dumps(item.packet,ensure_ascii=False)
+            if len(packet)>32000 or contains_phi(packet):
+                raise HTTPException(400,'Voice context requires review')
+            db.execute('INSERT OR REPLACE INTO phone_voice_context VALUES (?,?,?,?)',
+                       (item.actor,item.user_id,packet,time.time()))
+        for identifier in update.archived:
+            db.execute('UPDATE phone_conversations SET archived=? WHERE call_id=?',(time.time(),identifier))
+        rows=db.execute('SELECT * FROM phone_conversations WHERE archived IS NULL ORDER BY created LIMIT 2').fetchall()
+    return {'conversations':[{**dict(r),'identity':callers().get(r['actor'])} for r in rows if r['actor'] in callers()]}
+
+
+class CallbackRequest(BaseModel):
+    claim: str = Field(min_length=20,max_length=100)
+    quote: str = Field(min_length=4,max_length=1000)
+
+
+@router.post('/internal/phone/jobs/{job_id}/callback', dependencies=[Depends(bridge_auth)])
+def spoken_callback(job_id: str, request: CallbackRequest):
+    from .phone_presence import stop_calls, automated_audio
+    with store().db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        job=db.execute('SELECT * FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
+        if not job or job['state']!='running' or not hmac.compare_digest(job['claim'] or '',request.claim):
+            raise HTTPException(403)
+        fresh=job['transcript'].rsplit('New caller speech: ',1)[-1]
+        quote=' '.join(request.quote.casefold().split())
+        if stop_calls(fresh) or automated_audio(fresh) or quote not in ' '.join(fresh.casefold().split()) or not re.search(r'\b(?:call me back|give me a call back|please call me|call me when)\b',quote) or re.search(r"\b(?:not|don.t|stop|never)\b",quote):
+            raise HTTPException(400,'An explicit current callback request is required')
+        # No historical preference or assistant speech can create authorization.
+        db.execute('UPDATE phone_jobs SET callback_requested=1 WHERE id=?',(job_id,))
+    return {'status':'requested','attempts':1}
 
 
 @router.post('/internal/phone/status', dependencies=[Depends(bridge_auth)])
@@ -783,14 +835,6 @@ async def phone_work_once():
     if not cfg.phone_outbound_enabled:
         return
     prepare_callback()
-    with store().db() as db:
-        callback = db.execute("""SELECT * FROM phone_jobs j WHERE callback_requested=1 AND state IN ('completed','failed')
-            AND created<? AND created>? AND NOT EXISTS (SELECT 1 FROM phone_outbound o WHERE o.callback_job=j.id) LIMIT 1""", (now-30,now-3600)).fetchone()
-    if callback:
-        entry = callers().get(callback['actor'])
-        if entry:
-            propose_call(callback['actor'], OutboundProposal(recipient=entry['phone'], message='Your requested Eli update is ready. Authenticate to hear it.',
-                         purpose='One callback requested by keypad for phone request '+callback['id']), callback_job=callback['id'], approved=True)
     with store().db() as db:
         db.execute('BEGIN IMMEDIATE')
         outgoing = db.execute("SELECT * FROM phone_outbound WHERE state='approved' AND expires>? ORDER BY approved LIMIT 1", (time.time(),)).fetchone()

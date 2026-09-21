@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     phone_trial_proxy_enabled: bool = False
     phone_live_enabled: bool = False
     phone_pin_required: bool = False
-    phone_followup_mode: str = "callback"
+    phone_followup_mode: str = "app"
     phone_live_model: str = "gpt-live-1"
     phone_public_url: str = ""
     phone_bridge_token: str = ""

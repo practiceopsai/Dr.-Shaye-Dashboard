@@ -57,6 +57,11 @@ class PhoneStore:
                     job_id TEXT PRIMARY KEY, actor TEXT NOT NULL, kind TEXT NOT NULL,
                     content TEXT NOT NULL, created REAL NOT NULL,
                     heard_at REAL, heard_call TEXT, followup_id TEXT);
+                CREATE TABLE IF NOT EXISTS phone_voice_context (
+                    actor TEXT PRIMARY KEY, user_id TEXT NOT NULL, packet TEXT NOT NULL, updated REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS phone_conversations (
+                    call_id TEXT PRIMARY KEY, actor TEXT NOT NULL, payload TEXT NOT NULL,
+                    created REAL NOT NULL, archived REAL);
             """)
             # Additive migration: existing accepted work and receipts stay intact.
             for table, columns in {
@@ -116,7 +121,9 @@ class PhoneStore:
 
     def notices(self, actor, call_id=''):
         with self.db() as db:
-            return [dict(r) for r in db.execute("""SELECT n.* FROM phone_notices n JOIN phone_jobs j ON j.id=n.job_id
+            return [dict(r) for r in db.execute("""SELECT n.*,j.call_id AS source_call,j.created AS requested_at,
+                COALESCE(d.caller_text,j.transcript) AS request FROM phone_notices n JOIN phone_jobs j ON j.id=n.job_id
+                LEFT JOIN phone_live_delegations d ON d.job_id=j.id
                 WHERE n.actor=? AND (n.heard_at IS NULL OR (n.kind='question' AND COALESCE(n.heard_call,'')!=?))
                 AND j.state IN ('completed','waiting_for_input','failed','uncertain')
                 ORDER BY CASE WHEN n.kind='question' THEN 0 ELSE 1 END,n.created LIMIT 32""", (actor,call_id))]
@@ -152,9 +159,9 @@ class PhoneStore:
                           'The following combines the original caller words and their clarification verbatim.\n'
                           'New caller speech: '+original+'\n'+answer)
             identifier, now = secrets.token_hex(16), time.time()
-            db.execute("""INSERT INTO phone_jobs(id,actor,call_id,transcript,created,updated,audio_state,root_id,parent_id,followup_allowed)
-                VALUES (?,?,?,?,?,?,'live',?,?,?)""",
-                (identifier,actor,call_id,transcript,now,now,row['root_id'] or row['id'],row['id'],row['followup_allowed']))
+            db.execute("""INSERT INTO phone_jobs(id,actor,call_id,transcript,created,updated,audio_state,root_id,parent_id,followup_allowed,callback_requested)
+                VALUES (?,?,?,?,?,?,'live',?,?,?,?)""",
+                (identifier,actor,call_id,transcript,now,now,row['root_id'] or row['id'],row['id'],0,row['callback_requested']))
             db.execute('INSERT INTO phone_live_delegations VALUES (?,?,?,?)',
                        (call_id,'continuation:'+identifier,identifier,original+'\n'+answer))
             db.execute("UPDATE phone_jobs SET state='resumed',resume_job=?,updated=? WHERE id=?",(identifier,now,row['id']))

@@ -34,12 +34,15 @@ export function PhoneRequests({ api, close, sample = false }: { api: Api; close:
     finally { submitting.current = false; if (mounted.current) setBusy(false); }
   }
   return <View style={s.gap}>
-    <Body>Requests keep running after you hang up. Missing details stay here until you answer.</Body>
+    <Body>Requests keep running after you hang up. Updates and missing details stay here. Eli calls back only when you explicitly ask.</Body>
     {!!error && <Notice danger>{error}</Notice>}
     {data && <Panel><Heading>Speak with Eli</Heading><Body>{data.eli_number || 'Sample phone connection'}</Body><Small>Call from {data.phone || 'your registered number'}. {data.pin_required ? 'Your existing phone code is required.' : 'No access code is needed.'}</Small>
       <Button label="Call Eli" icon="call-outline" disabled={sample || !data.eli_number} onPress={() => { void Linking.openURL(`tel:${data.eli_number}`).catch(() => setError('The phone app could not be opened.')); }} />
     </Panel>}
     <Button secondary label="Refresh phone requests" onPress={() => { void refresh(); }} />
+    {data?.summaries?.slice(0, 3).map(call => <Panel key={call.id}><Heading>Call summary</Heading><Small>{new Date(call.created * 1000).toLocaleString()}</Small>
+      {call.items.map(item => <View key={item.id} style={s.gap}><Body>{item.request}</Body><Small>{item.state.replaceAll('_', ' ')}{item.heard_at ? ' · Shared on call' : ' · Saved here'}</Small><Body>{item.question || item.result || item.error || 'Still working. This summary updates as work finishes.'}</Body></View>)}
+    </Panel>)}
     {!data && !error && <Small>Loading phone requests...</Small>}
     {data?.jobs.length === 0 && <Small>No phone requests yet.</Small>}
     {data?.jobs.map(job => <Panel key={job.id}>

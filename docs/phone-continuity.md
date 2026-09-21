@@ -1,3 +1,5 @@
+> The callback and speech-routing behavior below is superseded by [phone-presence.md](phone-presence.md). Callbacks now require an explicit current request.
+
 # Background phone tasks and conversation continuity
 
 ## Diagnosis before changes

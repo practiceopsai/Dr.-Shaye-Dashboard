@@ -15,6 +15,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.response_policy import user_turn, validate_text
 from . import performance
+from . import presence
 from .operations import SCHEMAS, latest_email, send_email
 from .clarification import SCHEMAS as QUESTION_SCHEMAS, clarify, answer_clarification, question_for, save_question, possible_question
 
@@ -107,6 +108,7 @@ class PhoneAdapter(BasePlatformAdapter):
         self.journal=Journal(Path(get_hermes_home())/'state/eli-phone.sqlite3')
         self.performance=performance.Performance(self.journal.path)
         self.loop_task=None
+        self.presence_task=None
         self.running={}
 
     async def connect(self, *, is_reconnect=False):
@@ -116,10 +118,14 @@ class PhoneAdapter(BasePlatformAdapter):
         for job in self.journal.recover():
             self.running[job['id']]=asyncio.create_task(self.process(job))
         self.loop_task=asyncio.create_task(self.poll())
+        self.presence_task=asyncio.create_task(presence.sync(self,api_request,configuration))
         return True
 
     async def disconnect(self):
         self._running=False
+        if self.presence_task:
+            self.presence_task.cancel()
+            await asyncio.gather(self.presence_task,return_exceptions=True)
         if self.loop_task:
             self.loop_task.cancel()
             await asyncio.gather(self.loop_task,return_exceptions=True)
@@ -269,12 +275,13 @@ def register(ctx):
     ctx.register_platform(name='eli_phone',label='Eli phone',adapter_factory=PhoneAdapter,check_fn=lambda:True,
         validate_config=lambda cfg:bool(os.environ.get('ELI_PHONE_BRIDGE_TOKEN') and configuration().get('backend_url')),
         allowed_users_env='ELI_PHONE_ALLOWED_USERS',allow_update_command=False,pii_safe=True,
-        platform_hint='This is a private registered-caller phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. The phone service handles authorized task callbacks without a passcode. Missing required details must use eli_phone_clarify; do not guess or narrate execution. '+PHONE_TOOL_GUIDANCE)
+        platform_hint='This is a private registered-caller phone conversation. Use the existing Eli identity, memory, rank and approval rules. Speak naturally and briefly, without reading markup. Accepted work continues after hangup. Do not treat a lost phone connection as cancellation. Keep requests and verified results in the existing durable task and memory tools. Never claim an external action succeeded without its receipt. A spoken response is delivered by the phone service; do not use send_message to dial. To call someone else, use eli_phone_propose_call; it creates an exact draft requiring command-center approval. Never call automatically after a task or hangup. Only an explicit current call-me-back request can use eli_phone_request_callback once. Updates otherwise stay in the app. Missing required details must use eli_phone_clarify; do not guess or narrate execution. '+PHONE_TOOL_GUIDANCE)
     from .messaging import send_whatsapp, send_imessage
     handlers={'eli_phone_send_whatsapp':send_whatsapp,'eli_phone_send_imessage':send_imessage,
               'eli_phone_latest_email':latest_email,'eli_phone_send_email':send_email,
-              'eli_phone_clarify':clarify,'eli_phone_answer_clarification':answer_clarification}
-    schemas=SCHEMAS+QUESTION_SCHEMAS
+              'eli_phone_clarify':clarify,'eli_phone_answer_clarification':answer_clarification,
+              'eli_phone_request_callback':presence.request_callback}
+    schemas=SCHEMAS+QUESTION_SCHEMAS+[presence.CALLBACK_SCHEMA]
     for schema in schemas:
         handler=handlers[schema['name']]
         ctx.register_tool(name=schema['name'],toolset='eli_phone',schema=schema,

@@ -246,6 +246,8 @@ def test_silent_work_and_completion_after_old_90_second_cutoff(configured,monkey
     job_id=live.enqueue(call,'slow-test','Complete approved task.','Complete approved task.')
     clock=SimpleNamespace(now=10.)
     model=FakeModel();call=live.LiveCall(None,model,cfg,call,STREAM)
+    call.conversation.append(fragment('u1','Complete approved task.'))
+    call.conversation.last_input=0
     monkeypatch.setattr(live,'time',SimpleNamespace(monotonic=lambda:clock.now,time=time.time))
     real_sleep=asyncio.sleep
     async def advance(seconds):

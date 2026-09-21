@@ -106,6 +106,8 @@ def test_result_and_question_are_held_while_caller_speaks(configured):
     call,identifier=queued(configured)
     finish(configured,identifier,'waiting_for_input','What should I say?')
     model=FakeModel();voice=live.LiveCall(None,model,configured[0],call,STREAM)
+    voice.conversation.append(fragment('u1','Email Fabio.'))
+    voice.conversation.last_input=0
     voice.last_speech=time.monotonic()
     asyncio.run(voice.deliver_ready_notice())
     assert model.sent==[]
@@ -172,6 +174,7 @@ def make_followup_ready(configured, question=False):
         db.execute('UPDATE phone_calls SET ended=? WHERE id=?',(time.time()-40,CALL))
         db.execute("UPDATE phone_live_streams SET state='closed',closed=? WHERE call_id=?",(time.time()-40,CALL))
         db.execute('UPDATE phone_notices SET created=?',(time.time()-40,))
+        db.execute('UPDATE phone_jobs SET updated=?,callback_requested=1 WHERE id=?',(time.time()-40,identifier))
     return call,identifier
 
 
@@ -214,7 +217,7 @@ def test_active_call_prevents_followup_and_old_jobs_do_not_get_called(configured
     prepare_callback();assert phone.store().outbound(call['actor'])==[]
     with phone.store().db() as db:
         db.execute("UPDATE phone_live_streams SET state='closed'")
-        db.execute('UPDATE phone_jobs SET followup_allowed=0')
+        db.execute('UPDATE phone_jobs SET followup_allowed=0,callback_requested=0')
     prepare_callback();assert phone.store().outbound(call['actor'])==[]
 
 
