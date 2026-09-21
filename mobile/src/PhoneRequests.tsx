@@ -33,6 +33,13 @@ export function PhoneRequests({ api, close, sample = false }: { api: Api; close:
     } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : 'Answer could not be confirmed. Refresh to check the task.'); }
     finally { submitting.current = false; if (mounted.current) setBusy(false); }
   }
+  async function cancel(id: string) {
+    if (submitting.current) return;
+    submitting.current = true; setBusy(true);
+    try { await api.cancelPhoneTask(id); await refresh(); }
+    catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : 'Cancellation could not be confirmed.'); }
+    finally { submitting.current = false; if (mounted.current) setBusy(false); }
+  }
   return <View style={s.gap}>
     <Body>Requests keep running after you hang up. Updates and missing details stay here. Eli calls back only when you explicitly ask.</Body>
     {!!error && <Notice danger>{error}</Notice>}
@@ -48,8 +55,12 @@ export function PhoneRequests({ api, close, sample = false }: { api: Api; close:
     {data?.jobs.map(job => <Panel key={job.id}>
       <Kicker>{job.state === 'waiting_for_input' ? 'Needs your answer' : job.state === 'completed' ? 'Response ready' : job.state.replaceAll('_', ' ')}</Kicker>
       <Small>{new Date(job.created * 1000).toLocaleString()}</Small><Body>{job.transcript}</Body>
-      {job.actions?.map(action => <Notice key={action.event_id} danger={action.status !== 'sent'}>{action.content}</Notice>)}
+      {job.actions?.map(action => <Notice key={action.event_id} danger={!['sent', 'verified'].includes(action.status)}>{action.content}</Notice>)}
       {!!job.result && <Body>{job.result}</Body>}{!!job.error && <Notice danger>{job.error}</Notice>}
+      {['queued', 'claimed', 'running', 'waiting_for_input'].includes(job.state) && <>
+        <Button secondary label={job.cancel_requested ? 'Cancellation requested' : job.state === 'running' ? 'Stop remaining work' : 'Cancel request'} disabled={busy || sample || !!job.cancel_requested} onPress={() => { void cancel(job.id); }} />
+        {job.state === 'running' && <Small>Actions already accepted by a provider may finish.</Small>}
+      </>}
       {job.state === 'waiting_for_input' && <><TextInput accessibilityLabel="Your answer" multiline maxLength={3000} style={s.input} value={answers[job.id] || ''} onChangeText={text => setAnswers(current => ({ ...current, [job.id]: text }))} placeholder="Answer Eli's question" editable={!busy} /><Button label="Answer and resume" busy={busy} disabled={!(answers[job.id] || '').trim()} onPress={() => { void answer(job.id); }} /></>}
     </Panel>)}
     {data?.outbound.map(call => <Panel key={call.id}><Kicker>Follow-up call · {call.state.replaceAll('_', ' ')}</Kicker><Body>{call.purpose}</Body>{!!call.error && <Notice danger>{call.error}</Notice>}</Panel>)}

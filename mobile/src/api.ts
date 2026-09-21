@@ -31,6 +31,7 @@ export function createApi(base: string, getToken: () => Promise<string>, unautho
   }
   return {
     phone: () => call<PhoneAccess>('/api/phone/access'),
+    cancelPhoneTask: (id: string) => call<{state: string; effect_cancelled: boolean}>(`/api/phone/jobs/${encodeURIComponent(id)}/cancel`, {}),
     answerPhoneQuestion: (id: string, answer: string) => call<{status: string; job_id: string}>(`/api/phone/jobs/${encodeURIComponent(id)}/answer`, { answer }),
     me: () => call<AuthUser>('/api/auth/me'),
     dashboard: (refresh = false) => call<Dashboard>(`/api/dashboard?refresh=${refresh}`),

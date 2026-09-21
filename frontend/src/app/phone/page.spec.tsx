@@ -4,12 +4,20 @@ import PhonePage from "./page";
 import { api, GOOGLE_CREDENTIAL_KEY } from "@/lib/api";
 
 vi.mock("@/components/GoogleSignIn",()=>({default:({onCredential}:{onCredential:(value:string)=>void})=><button onClick={()=>onCredential("new-credential")}>Test sign in</button>}));
-vi.mock("@/lib/api",()=>({GOOGLE_CREDENTIAL_KEY:"test-credential",api:{me:vi.fn(),phone:vi.fn(),phonePin:vi.fn(),answerPhoneQuestion:vi.fn(),proposeCall:vi.fn(),approveCall:vi.fn(),cancelCall:vi.fn()}}));
+vi.mock("@/lib/api",()=>({GOOGLE_CREDENTIAL_KEY:"test-credential",api:{me:vi.fn(),phone:vi.fn(),phonePin:vi.fn(),answerPhoneQuestion:vi.fn(),cancelPhoneTask:vi.fn(),proposeCall:vi.fn(),approveCall:vi.fn(),cancelCall:vi.fn()}}));
 const owner={email:"owner@example.com",name:"Owner",role:"owner" as const};
 const access={phone:"+12025550101",eli_number:"+12025550100",pin_configured:false,bridge_online:true,outbound_enabled:true,jobs:[],outbound:[]};
 beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();sessionStorage.setItem(GOOGLE_CREDENTIAL_KEY,"initial");vi.mocked(api.me).mockResolvedValue(owner);vi.mocked(api.phone).mockResolvedValue(access);});
 
 describe("private phone setup",()=>{
+  it("cancels the selected task and preserves uncertainty about in-flight effects",async()=>{
+    vi.mocked(api.phone).mockResolvedValue({...access,jobs:[{id:"running-one",transcript:"Send the approved email",state:"running",created:1,result:"",error:"",callback_requested:0}]});
+    vi.mocked(api.cancelPhoneTask).mockResolvedValue({state:"cancel_requested",effect_cancelled:false});
+    render(<PhonePage/>);
+    fireEvent.click(await screen.findByText("Stop remaining work"));
+    await waitFor(()=>expect(api.cancelPhoneTask).toHaveBeenCalledWith("running-one"));
+    expect(screen.getByText("Actions already accepted by a provider may finish.")).toBeInTheDocument();
+  });
   it("separates a completed response from a blocked message",async()=>{
     vi.mocked(api.phone).mockResolvedValue({...access,jobs:[{id:"job-one",transcript:"Text Fabio hello",state:"completed",created:1,result:"iMessage needs reconnection.",error:"",callback_requested:0,actions:[{event_id:"receipt-one",status:"failed",content:"The iMessage send is not confirmed."}]}]});
     render(<PhonePage/>);

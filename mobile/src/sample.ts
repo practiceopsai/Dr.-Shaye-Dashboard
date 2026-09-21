@@ -46,6 +46,7 @@ export function createSampleApi(): Api {
   }
   return {
     phone: async () => ({ phone: '', eli_number: '', pin_configured: false, pin_required: false, bridge_online: false, outbound_enabled: false, jobs: [], outbound: [] }),
+    cancelPhoneTask: async () => { throw new Error('No live phone requests are available in sample mode.'); },
     answerPhoneQuestion: async () => { throw new Error('No live phone requests are available in sample mode.'); },
     me: async () => copy(sampleUser),
     dashboard: async () => dashboard(),
