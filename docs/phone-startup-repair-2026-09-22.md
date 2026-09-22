@@ -44,5 +44,14 @@ historical status retrieval, and visibility after a cross-channel revision.
 Private voice probes use the observed backlog, the real voice model, synthetic
 caller audio and an isolated database without execution workers or external
 actions. Network-aborted runs are recorded separately, not counted as passes.
-Production release checks and a handset retest remain necessary; a relay probe
-does not establish PSTN or microphone behavior.
+The final server-side probe gave one opening greeting, remained quiet until the
+caller spoke, answered model and arithmetic questions, injected zero historical
+task states and created zero jobs. A relay probe does not establish PSTN or
+microphone behavior; a handset retest remains necessary.
+
+Release `c54692cb3b016d09ee951e7b94583a807b0963e1` was deployed through successful
+CI (248 backend tests, 46 frontend tests and frontend build). The installed source
+hashes match the tested files. Backend health returned 200, the OpenAI voice
+handshake returned `session.started`, and the native bridge heartbeat was fresh.
+A fresh-call projection returned zero automatic task updates while explicit
+historical status still exposed the preserved open tasks.
