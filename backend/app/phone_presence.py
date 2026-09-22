@@ -69,6 +69,23 @@ def local_facts(call,cfg):
 
 
 def task_states(call):
+    from . import task_ledger as ledger
+    with phone.store().db() as db:tasks=ledger.snapshot(db,call['actor'])
+    result={}
+    for task in tasks:
+        if task['call_id']!=call['id'] and task['state'] in {'completed','cancelled','failed'}:continue
+        if task['parent_id'] and task['state'] not in {'waiting_for_user','failed'}:continue
+        result[task['id']]={'task_id':task['id'],'question_id':task['question_id'],'version':task['version'],
+            'scope':task['intent_summary'],'state':task['execution_state'],'ledger_state':task['state'],
+            'details':task['parameters'],'kind':task['parameters']['kind'],'recipient':task['parameters']['recipient'],
+            'request':task['request'][:2500],'question':task['question'] if task['state']=='waiting_for_user' else '',
+            'completion_allowed':task['completion_allowed'],'receipts':task['receipts'],
+            'irreversible_boundary_passed':task['irreversible_boundary_passed'],'effect_in_flight':task['effect_in_flight'],
+            'result':(task['error'] or task['result_or_artifact_pointer'])[:500] if task['state'] in {'completed','failed'} else ''}
+    return result
+
+
+def legacy_task_states(call):
     """One current execution/clarification revision per logical task, with receipts."""
     with phone.store().db() as db:
         rows=db.execute("""SELECT * FROM phone_jobs WHERE actor=? AND call_id=?
@@ -96,7 +113,9 @@ def work_requested(text):
     text = re.sub(r'\b(?:can|could|are) you (?:able to )?(?:send|call|text|email|check|schedule) (?:people|messages|emails|other people)\??', '', text, flags=re.I)
     if re.match(r'^\s*(?:okay[, .]+)?(?:how (?:do|can|would|should) (?:i|you)|what (?:is|are) (?:an? |the )?(?:email|text|calendar))\b',text,re.I):
         return False
-    verbs=bool(re.search(r'\b(?:send|draft|write|add|move|remove|put|set|note|save|remember|remind|schedule|book|cancel|reschedule|delete|update|change|revise|shorten|prepare|create|make|check|look up|find|search|call me back|call (?!yourself)|approve)\b', text, re.I))
+    from .task_intent import control_hint
+    if control_hint(text):return True
+    verbs=bool(re.search(r'\b(?:send|draft|write|research|prioritize|reprioritize|add|move|remove|put|set|note|save|remember|remind|schedule|book|cancel|reschedule|delete|update|change|revise|shorten|prepare|create|make|check|look up|find|search|call me back|call (?!yourself)|approve)\b', text, re.I))
     message=bool(re.search(r'(?:^|[.!?]\s*|\b(?:please|you|also|then|and|okay)\s+)(?:email|text)\s+\w',text,re.I))
     return verbs or message
 

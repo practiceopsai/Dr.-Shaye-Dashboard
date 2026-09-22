@@ -93,6 +93,8 @@ class PhoneStore:
             }.items():
                 if name not in {r['name'] for r in db.execute('PRAGMA table_info(phone_jobs)')}:
                     db.execute('ALTER TABLE phone_jobs ADD COLUMN '+name+' '+definition)
+            from .task_ledger import migrate
+            migrate(db)
 
     @contextmanager
     def db(self):
@@ -113,13 +115,15 @@ class PhoneStore:
             # Claimed/started work is not replayed after a missing heartbeat.
             # The native worker retains an operation receipt and reconciles it.
             row = db.execute("""SELECT * FROM phone_jobs j WHERE state='queued' AND cancel_requested IS NULL
+                AND NOT EXISTS (SELECT 1 FROM phone_task_holds h WHERE h.actor=j.actor)
                 AND (?='any' OR (execution_class='foreground_read')=?)
                 AND NOT EXISTS (SELECT 1 FROM phone_jobs a WHERE a.actor=j.actor
                   AND a.state IN ('claimed','running') AND (?='any' OR (a.execution_class='foreground_read')=?)
                   AND (a.resource_key='global' OR j.resource_key='global' OR a.resource_key=j.resource_key))
                 AND NOT EXISTS (SELECT 1 FROM json_each(j.depends_on) dep
                   WHERE NOT EXISTS (SELECT 1 FROM phone_jobs p WHERE
-                    COALESCE(p.root_id,p.id)=dep.value AND p.state='completed'))
+                    COALESCE(p.root_id,p.id)=dep.value AND p.state='completed'
+                    AND NOT EXISTS (SELECT 1 FROM phone_task_meta m WHERE m.id=dep.value AND m.current_job!=p.id)))
                 ORDER BY priority DESC,created LIMIT 1""",(lane,lane=='read',lane,lane=='read')).fetchone()
             if not row:
                 return None
@@ -127,13 +131,28 @@ class PhoneStore:
             db.execute("UPDATE phone_jobs SET state='claimed',claim=?,updated=? WHERE id=?", (claim, now, row['id']))
             db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',
                        (row['id'], 'claimed', 'timing', '', 'claimed', int((now-row['created'])*1000), '', now))
-            return {**dict(row), 'claim': claim, 'state': 'claimed', 'audio': None}
+            from . import task_ledger as ledger
+            root=ledger.track(db,row['id'])
+            control=ledger.control(db,row['id'])
+            ledger.event(db,root,'started',{'job_id':row['id']})
+            return {**dict(row), 'claim': claim, 'state': 'claimed', 'audio': None,
+                    'task_id':root,'ledger_version':control['version']}
 
     def cancel(self, actor, job_id):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             row=db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(job_id,actor)).fetchone()
             if not row:raise ValueError('Unknown task')
+            from . import task_ledger as ledger
+            root=ledger.track(db,job_id)
+            if root:
+                task=ledger.get(db,actor,root)
+                try:task=ledger.cancel(db,actor,root);reason=''
+                except ValueError as exc:reason=str(exc)
+                return {'task_id':root,'state':'cancel_requested' if task['cancel_requested'] and task['state']=='running' else task['execution_state'],
+                    'effect_cancelled':task['state']=='cancelled' and not task['irreversible_boundary_passed'],
+                    'irreversible_boundary_passed':task['irreversible_boundary_passed'],
+                    'effect_in_flight':task['effect_in_flight'],'reason':reason}
             if row['state']=='resumed' and row['resume_job']:
                 job_id=row['resume_job'];row=db.execute('SELECT * FROM phone_jobs WHERE id=? AND actor=?',(job_id,actor)).fetchone()
             if row['state']=='expanded':
@@ -238,13 +257,19 @@ class PhoneStore:
                        (row['batch_id'],row['resource_key'],row['depends_on'],row['plan'],identifier))
             if replan:
                 plan=json.loads(row['plan'] or '{}')
-                plan['continuation_replan']=True
+                if not plan.get('routing_clarification'):plan['continuation_replan']=True
                 plan['clarification_history']=plan.get('clarification_history',[])+[
                     {'question_id':row['id'],'question':row['question'],'spoken_prompt':spoken_prompt,'answer':answer,'source_job':source_job}]
                 db.execute('UPDATE phone_jobs SET plan=? WHERE id=?',(json.dumps(plan),identifier))
             if replan or row['execution_class']=='intake':
                 db.execute("UPDATE phone_jobs SET state='planning',execution_class='intake' WHERE id=?",(identifier,))
             db.execute("UPDATE phone_jobs SET state='resumed',resume_job=?,updated=? WHERE id=?",(identifier,now,row['id']))
+            root=row['root_id'] or row['id']
+            changed=db.execute('UPDATE phone_task_meta SET current_job=?,version=version+1,updated=? WHERE id=?',
+                (identifier,now,root)).rowcount
+            if changed:
+                from . import task_ledger
+                task_ledger.event(db,root,'answer',{'question_id':row['id'],'answer':answer,'job_id':identifier})
             db.execute('UPDATE phone_notices SET heard_at=COALESCE(heard_at,?),heard_call=COALESCE(heard_call,?) WHERE job_id=?',(now,call_id,row['id']))
             if source_job:
                 db.execute('INSERT OR IGNORE INTO phone_job_updates VALUES (?,?,?,?,?,?,?,?)',

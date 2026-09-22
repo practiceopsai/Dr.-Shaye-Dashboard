@@ -87,6 +87,8 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
             and all(args.get(k)==prepared.get(k) for k in ('recipient','message','approval_quote')))
         from .articles import authorized
         derived=authorized(db,job,args,channel)
+        from .workflow import authorized as workflow_authorized
+        derived=derived or workflow_authorized(db,job,args,channel)
         if (status_question(quote) or normalize(quote) not in normalized
                 or (not derived and not re.search(r'(?<!\w)' + re.escape(normalize(message)) + r'(?!\w)', normalize(quote)))
                 or (channel == 'whatsapp' and not derived and not re.search(r'\bwhats\s*app\b', quote, re.I))
@@ -98,7 +100,7 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
         names = [part for item in settings.get('identities', {}).values() if item.get('phone') == recipient
                  for part in str(item.get('name', '')).split() if part.casefold() not in {'dr.', 'dr', 'doctor'}]
         named = any(re.search(r'\b' + re.escape(name) + r'\b', quote, re.I) for name in names)
-        if not named and recipient.lstrip('+') not in re.sub(r'\D', '', quote):
+        if not derived and not named and recipient.lstrip('+') not in re.sub(r'\D', '', quote):
             return {'success': False, 'error': 'Ask the caller to name the authorized contact or repeat the exact recipient number.'}
         digest = hashlib.sha256(((job.get('root_id') or request_id)+'\0'+channel+'\0'+recipient+'\0'+message).encode()).hexdigest()
         db.execute('CREATE TABLE IF NOT EXISTS message_receipts(id TEXT PRIMARY KEY,request_id TEXT,recipient TEXT,message TEXT,approval_quote TEXT,state TEXT,receipt TEXT,created REAL,updated REAL)')
@@ -114,6 +116,11 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
             db.rollback()
             return {'success': False, 'state': 'unavailable', 'pending': True,
                     'error': 'iMessage is disconnected. The request remains in the phone task history, but nothing was sent. Reconnect iMessage and explicitly resume this request; do not substitute WhatsApp or SMS.'}
+        from . import ledger
+        try:ledger.effect(job,digest)
+        except Exception:
+            db.rollback()
+            return {'success':False,'state':'blocked','error':'The task changed or is paused. This message was not sent.'}
         db.execute('INSERT INTO message_receipts VALUES (?,?,?,?,?,?,?,?,?)',
                    (digest, request_id, recipient, message, quote, 'sending', '{}', time.time(), time.time()))
         db.commit()
@@ -141,6 +148,9 @@ def send_message(args, settings, *, channel, session=None, home=None, sender=Non
         db.execute('UPDATE message_receipts SET state=?,receipt=?,updated=? WHERE id=?',
                    (receipt['state'], json.dumps(receipt), time.time(), digest))
         db.commit()
+        try:ledger.effect(job,digest,'verified' if receipt.get('success') else 'uncertain',
+            {'provider_id':receipt['message_id']} if receipt.get('message_id') else {})
+        except Exception:pass
         return receipt
     finally:
         db.close()

@@ -55,7 +55,19 @@ def begin(perf,job,tool,args):
             if row:
                 return {'block':True,'message':'This batch contains an effect with an existing durable attempt: '+row['state']+'. '+row['receipt']+
                         ' Do not execute it again. Read the source if uncertain; submit only remaining unattempted operations.'}
+        reserved=[]
         for key,name in keyed:
+            from . import ledger
+            try:ledger.effect(job,key)
+            except Exception:
+                # Nothing in this batch has reached the provider. Release only
+                # these known-unissued reservations, never an uncertain write.
+                for previous in reserved:
+                    try:ledger.effect(job,previous,'rejected',{'reason':'batch rejected before provider invocation'})
+                    except Exception:pass
+                for previous in reserved:db.execute("UPDATE phone_effect_attempts SET state='rejected' WHERE id=?",(previous,))
+                return {'block':True,'message':'The canonical task fence rejected this external write. Recheck task state; do not choose another tool or repeat the effect.'}
+            reserved.append(key)
             db.execute('INSERT INTO phone_effect_attempts VALUES (?,?,?,?,?,?,?,?,?)',
                        (key,job.get('root_id') or job['id'],job['id'],name,'started','','',time.time(),time.time()))
             db.execute('INSERT INTO phone_effect_events VALUES (?,?,?,?)',(key,'started','',time.time()))
@@ -89,6 +101,10 @@ def finish(perf,job,tool,args,data,status):
         provider=str(result.get('message_id') or result.get('id') or result.get('event_id') or '')[:200]
         success=not(result.get('error') or result.get('success') is False or status in {'failed','error'})
         state='verified' if success and provider and result.get('source_verified') is True else 'accepted' if success and provider else 'uncertain'
+        from . import ledger
+        try:ledger.effect(job,key,'verified' if state=='verified' else 'committed' if provider else 'uncertain',
+            {'provider_id':provider,'tool':name} if provider else {})
+        except Exception:pass  # Local durable receipt and reconciliation retain the outcome.
         proof=verification_plan(name,params,result,provider) if state=='accepted' else None
         receipt=json.dumps({'provider_operation_id':provider,'state':state,'source_verified':state=='verified','verification':proof})
         with perf.db() as db:
@@ -155,7 +171,11 @@ def reconcile(perf,job,invoke=None):
                 ('verified' if verified else 'accepted',json.dumps(receipt),time.time(),row['id'])).rowcount
             if changed:db.execute('INSERT OR IGNORE INTO phone_effect_events VALUES (?,?,?,?)',
                 (row['id'],'verification-'+str(attempts+1),json.dumps(receipt),time.time()))
-        if verified:perf.record(job['id'],'action',row['tool'],'verified',content='Provider read-back verified the existing operation. No action was repeated.')
+        if verified:
+            from . import ledger
+            try:ledger.effect(job,row['id'],'verified',{'provider_id':row['provider_id']})
+            except Exception:pass
+            perf.record(job['id'],'action',row['tool'],'verified',content='Provider read-back verified the existing operation. No action was repeated.')
 
 
 def verified_provider(perf,job,provider):
@@ -169,6 +189,9 @@ def verified_provider(perf,job,provider):
             receipt=json.dumps({'provider_operation_id':provider,'state':'verified','source_verified':True})
             db.execute("UPDATE phone_effect_attempts SET state='verified',receipt=?,updated=? WHERE id=?",(receipt,time.time(),row['id']))
             db.execute('INSERT OR IGNORE INTO phone_effect_events VALUES (?,?,?,?)',(row['id'],'verified',receipt,time.time()))
+            from . import ledger
+            try:ledger.effect(job,row['id'],'verified',{'provider_id':provider})
+            except Exception:pass
 
 
 def review(perf,job):

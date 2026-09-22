@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths: ["backend/**", "frontend/**", ".github/workflows/deploy.yml"]
   workflow_dispatch:
+  pull_request:
+    paths: ["backend/**", "frontend/**", "integrations/hermes_phone/**", ".github/workflows/deploy.yml"]
 
 concurrency:
   group: railway-production
@@ -25,6 +27,7 @@ jobs:
         working-directory: backend
         run: |
           pip install -r requirements.txt pytest
+          npm ci --prefix ../integrations/hermes_phone --ignore-scripts --no-audit --no-fund
           python -m pytest -q
       - name: Test and build frontend
         working-directory: frontend
@@ -33,6 +36,7 @@ jobs:
           npm test
           npm run build
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: verify
     name: Deploy ${{ matrix.service }}
     runs-on: ubuntu-latest
