@@ -44,11 +44,17 @@ Backchannel policy: Choose brief listening responses naturally when useful.
 Interruption policy: Yield immediately when the caller interrupts. Listen to the
 latest thought; handle overlap with natural courtesy. Do not continue an old answer
 across a topic change. Speech interruption and cancellation of work are separate.
+After the opening greeting, wait for the caller. Silence is not a request for a
+second greeting, a check-in or an unfinished task's question. Let the caller finish
+their thought, including pauses to find words, before answering or clarifying.
+Do not anticipate a question's ending or complete the caller's sentences.
 
 Delegation policy: Answer general questions and facts in session context directly.
 Date/time, your voice_model, native_model, team, identity, personality and recalled
 facts never require a backend job. previous_call is a different recorded call;
-never substitute this conversation for it. Clock updates are silent reference data.
+never substitute this conversation for it. It is reference for questions about
+history, not a reason to resume an old topic or ask old questions on a new call.
+Clock updates are silent reference data.
 Delegate new work, fresh lookups, deep reasoning, changes, cancellations, priorities
 and clarification answers to the background engine. Stay fully available to converse
 while it works. If intent is unclear, ask briefly before claiming acceptance.
@@ -530,7 +536,7 @@ class LiveCall:
                 if presence.automated_audio(caller_text):
                     self.conversation.consume(consumed)
                     return
-                if presence.task_status_question(caller_text) and (states:=await asyncio.to_thread(presence.task_states,self.call)):
+                if presence.task_status_question(caller_text) and (states:=await asyncio.to_thread(presence.task_states,self.call,include_previous=True)):
                     self.conversation.consume(consumed)
                     await asyncio.to_thread(task_intent.release,phone.store(),self.call['actor'],self.call['id'])
                     await self.append('thinking','Current task status from the execution ledger; answer this question now using these states. '
@@ -621,7 +627,7 @@ class LiveCall:
         # delegating. It never controls audio or treats RMS noise as caller intent.
         if self.tasks or time.monotonic()-self.conversation.last_input<.8:return
         transcript,used,caller=self.conversation.request(float('inf'))
-        questions=await asyncio.to_thread(phone.store().questions,self.call['actor'])
+        questions=await asyncio.to_thread(phone.store().questions,self.call['actor'],self.call['id'])
         if not transcript or (not presence.work_requested(caller) and not questions) or await asyncio.to_thread(self.ignore_social,caller):return
         if presence.recall_question(caller):return
         identifier='capture:'+hashlib.sha256('|'.join(used).encode()).hexdigest()[:24]
@@ -645,7 +651,9 @@ class LiveCall:
                 summary.append({'task':child['id'],'scope':plan.get('atomic_scope'),'state':child['state'],
                                 'message':plan.get('message',{}).get('message'),'question':child['question']})
             await self.append('thinking','Validated intake. Only tasks with complete content are TASK_READY. '
-                              'A waiting_for_input task is NOT accepted for execution: ask its question at this conversational break. '
+                              'A waiting_for_input task is NOT accepted for execution. If its question has not already been asked, '
+                              'ask once after the caller finishes their thought and while this task is relevant. '
+                              'This update is not a turn boundary or a request to speak. '
                               'State: '+json.dumps(summary or [{'task':job_id,'state':row['state']}],ensure_ascii=False),delegation,task_id=job_id)
 
 
@@ -746,8 +754,10 @@ class LiveCall:
         access = asyncio.create_task(self.monitor_access())
         delivery = asyncio.create_task(self.deliver_notices())
         try:
-            await self.append('instructions', 'Greet the caller now in English: you are Eli and are ready to talk. '
-                              'Ask how you can help, then listen. Do not ask for an access code. '
+            await self.append('instructions', 'At this call opening only, greet the caller now in English as Eli. '
+                              'Give one brief greeting, then listen. '
+                              'Wait for the caller to finish their thought. Do not fill silence with repeated greetings, '
+                              'check-ins or questions from earlier calls. Do not ask for an access code. '
                               + ('This is a requested callback. Say you are calling back about their earlier request; '
                                  'saved results or clarification will follow. Do not invent an update.' if self.call.get('outbound_id') else ''))
             done, _ = await asyncio.wait([receiver, sender, access, delivery], timeout=1200, return_when=asyncio.FIRST_COMPLETED)

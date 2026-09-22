@@ -70,6 +70,55 @@ def test_old_call_notice_is_not_blurted_at_next_greeting(configured):
     assert not any(e['type']=='session.commentary.append' for e in v.upstream.sent)
 
 
+def test_old_open_tasks_never_enter_new_call_delivery_or_capture(configured):
+    call,job=queued(configured)
+    finish(configured,job,'waiting_for_input','Which calendar should I check?')
+    next_call={**call,'id':'next-call'}
+    assert not presence.task_states(next_call)
+    assert job in presence.task_states(next_call,include_previous=True)
+    voice=live.LiveCall(None,FakeModel(),configured[0],next_call,STREAM)
+    # A short introduction must not be mistaken for an answer to an old question.
+    voice.conversation.append(fragment('hello','This is Fabio.'))
+    voice.conversation.last_input=0
+
+    async def exercise():
+        await voice.capture_pending()
+        assert not voice.tasks
+        delivery=asyncio.create_task(voice.deliver_notices())
+        try:
+            await asyncio.sleep(.25)
+        finally:
+            delivery.cancel()
+            await asyncio.gather(delivery,return_exceptions=True)
+        assert not voice.upstream.sent
+    asyncio.run(exercise())
+    assert phone.store().questions(call['actor'])[0]['id']==job
+    assert len(phone.store().jobs(call['actor']))==1
+
+
+def test_current_call_task_remains_visible_after_cross_channel_revision(configured):
+    from app import task_ledger as ledger
+    call,job=queued(configured)
+    with phone.store().db() as db:
+        ledger.track(db,job)
+        changed=ledger.revise(db,call['actor'],job,'Use the subject Update','text-1',call_id='text-channel')
+    states=presence.task_states(call)
+    assert list(states)==[job]
+    assert states[job]['version']==changed['version']==2
+    assert not states[job]['completion_allowed']
+
+
+def test_new_call_can_explicitly_ask_for_old_task_status(configured):
+    call,job=queued(configured)
+    finish(configured,job,'waiting_for_input','Which calendar should I check?')
+    voice=live.LiveCall(None,FakeModel(),configured[0],{**call,'id':'next-call'},STREAM)
+    voice.conversation.append(fragment('status','What is the status of the tasks?'))
+    voice.conversation.last_input=0
+    asyncio.run(voice.delegate('status-request',1000))
+    assert 'Which calendar should I check?' in ''.join(e['content'] for e in voice.upstream.sent)
+    assert len(phone.store().jobs(call['actor']))==1
+
+
 def test_no_automatic_callback_even_with_old_opt_in_or_callback_config(configured):
     call,job=make_followup_ready(configured)
     configured[0].phone_followup_mode='callback'

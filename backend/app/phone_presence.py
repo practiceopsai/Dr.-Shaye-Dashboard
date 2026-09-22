@@ -68,12 +68,23 @@ def local_facts(call,cfg):
     return {k:v for k,v in context.items() if k not in {'phone_work','recent_phone_dialogue'}}
 
 
-def task_states(call):
+def task_states(call, *, include_previous=False):
+    """Voice updates cover this conversation, not the actor's historical backlog.
+
+    An explicit status lookup can inspect earlier open tasks. Revisions made on
+    another channel remain visible when their logical task belongs to this call.
+    This is a presentation boundary only; it never cancels or forgets old work.
+    """
     from . import task_ledger as ledger
-    with phone.store().db() as db:tasks=ledger.snapshot(db,call['actor'])
+    with phone.store().db() as db:
+        tasks=ledger.snapshot(db,call['actor'])
+        current={r[0] for r in db.execute(
+            'SELECT COALESCE(root_id,id) FROM phone_jobs WHERE actor=? AND call_id=?',
+            (call['actor'],call['id']))}
     result={}
     for task in tasks:
-        if task['call_id']!=call['id'] and task['state'] in {'completed','cancelled','failed'}:continue
+        if task['id'] not in current:
+            if not include_previous or task['state'] in {'completed','cancelled','failed'}:continue
         if task['parent_id'] and task['state'] not in {'waiting_for_user','failed'}:continue
         result[task['id']]={'task_id':task['id'],'question_id':task['question_id'],'version':task['version'],
             'scope':task['intent_summary'],'state':task['execution_state'],'ledger_state':task['state'],
