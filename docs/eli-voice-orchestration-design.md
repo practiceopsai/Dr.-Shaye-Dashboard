@@ -225,13 +225,23 @@ scope and idempotent call evidence ingestion.
 | M voice to text | Authorized text endpoint cancels the voice task; native ingress authorization/dedup tests pass. Handset/channel acceptance remains open. |
 | N partial speech | Actual planner asks for the missing instruction without executing; API supplies no acoustic confidence score. |
 
-**Not production-deployed.** The definition of done is not met: the absolute latency
-ceiling and handset acceptance remain open. Production stays on `7271798` while the
-candidate is staged. An explicit decision is required before relaxing the user's
-800 ms gate. A source-level implementation or simulated receipt is not evidence of
-real handset behavior or actual external delivery.
+**Production-deployed as `fb74b7ec7fa3c9b3111a92d51b8e62950e0fe4b5` on 22 September
+2026 UTC.** The operator explicitly authorized this release at its measured speed
+with "deploy it" after reviewing the unmet 800 ms gate. This approves rollout for
+handset acceptance; it does not make the 800 ms requirement pass. Real handset
+interruption, cross-channel behavior and external delivery remain pending.
+A source-level implementation or simulated receipt is not evidence of those outcomes.
 
-For rollout after the gate is resolved: take verified native/backend snapshots, run
+Production verification: backend and frontend deployment CI passed; all 13 checked
+backend source files and 17 installed native files match the tested candidate.
+Hermes restarted idle with its configuration preserved, PptxGenJS 4.0.1 dependencies
+verified, phone and WhatsApp connected, and two actor records refreshing through
+the shared task bridge. Backend/frontend health returned 200; the authenticated
+capability endpoint returned ledger version 1; OpenAI returned `session.started`.
+No PIN or automatic callback was enabled. Existing iMessage disconnection remains
+outside this deployment. The operator was invited to perform handset acceptance.
+
+Rollout procedure (completed for this release): take verified native/backend snapshots, run
 vault maintenance evaluations, drain only while idle, install the compatible native
 plugin and its locked Node dependencies, deploy the backend, verify source hashes
 and bridge health, then perform a handset acceptance session. Additive ledger tables
