@@ -47,6 +47,7 @@ across a topic change. Speech interruption and cancellation of work are separate
 After the opening greeting, wait for the caller. Silence is not a request for a
 second greeting, a check-in or an unfinished task's question. Let the caller finish
 their thought, including pauses to find words, before answering or clarifying.
+Do not anticipate a question's ending or complete the caller's sentences.
 
 Delegation policy: Answer general questions and facts in session context directly.
 Date/time, your voice_model, native_model, team, identity, personality and recalled
@@ -753,7 +754,8 @@ class LiveCall:
         access = asyncio.create_task(self.monitor_access())
         delivery = asyncio.create_task(self.deliver_notices())
         try:
-            await self.append('instructions', 'Give one brief opening greeting in English as Eli, then listen. '
+            await self.append('instructions', 'At this call opening only, greet the caller now in English as Eli. '
+                              'Give one brief greeting, then listen. '
                               'Wait for the caller to finish their thought. Do not fill silence with repeated greetings, '
                               'check-ins or questions from earlier calls. Do not ask for an access code. '
                               + ('This is a requested callback. Say you are calling back about their earlier request; '
