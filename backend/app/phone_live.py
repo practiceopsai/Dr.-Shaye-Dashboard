@@ -759,12 +759,15 @@ class LiveCall:
         access = asyncio.create_task(self.monitor_access())
         delivery = asyncio.create_task(self.deliver_notices())
         try:
+            from .phone_contact_calls import opening
+            requested_opening=await asyncio.to_thread(opening,self.call)
             await self.append('instructions', 'At this call opening only, greet the caller now in English as Eli. '
                               'Give one brief greeting, then listen. '
                               'Wait for the caller to finish their thought. Do not fill silence with repeated greetings, '
                               'check-ins or questions from earlier calls. Do not ask for an access code. '
-                              + ('This is a requested callback. Say you are calling back about their earlier request; '
+                              + (requested_opening or ('This is a requested callback. Say you are calling back about their earlier request; '
                                  'saved results or clarification will follow. Do not invent an update.' if self.call.get('outbound_id') else ''))
+                              )
             done, _ = await asyncio.wait([receiver, sender, access, delivery], timeout=1200, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()

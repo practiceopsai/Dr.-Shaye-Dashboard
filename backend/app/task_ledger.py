@@ -100,7 +100,7 @@ def snapshot(db, actor, task_id=None):
         inflight = any(x['state'] in {'reserved','uncertain'} for x in effects)
         state = STATES.get(row['state'],row['state'])
         if row['modified'] and state == 'pending': state = 'modified'
-        mutation = plan.get('atomic_kind') in {'email','imessage','whatsapp','calendar','article','global','deliver'} or bool(plan.get('workflow',{}).get('channel') and plan.get('operation')=='workflow')
+        mutation = plan.get('atomic_kind') in {'email','imessage','whatsapp','calendar','article','global','deliver','call'} or bool(plan.get('workflow',{}).get('channel') and plan.get('operation')=='workflow')
         confirmed = any(x['status'] in {'sent','verified'} for x in receipts) or any(x['state']=='verified' for x in effects)
         blockers = holds_for(db, row['id']) if state not in TERMINAL else []
         tasks.append({'id':root,'job_id':row['id'],'version':row['version'],'parent_id':row['parent_task'],

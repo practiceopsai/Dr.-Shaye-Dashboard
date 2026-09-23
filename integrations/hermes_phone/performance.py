@@ -244,14 +244,14 @@ def missing_send_receipt(perf,job):
     plan=job.get('plan') or {}
     if isinstance(plan,str):plan=json.loads(plan)
     kind=plan.get('atomic_kind')
-    if kind not in {'email','imessage','whatsapp','calendar','article','global','deliver'}:return False
+    if kind not in {'email','imessage','whatsapp','calendar','article','global','deliver','call'}:return False
     required=plan.get('required_receipts') or ([kind] if kind in {'email','imessage','whatsapp','calendar'} else [])
     if not required and kind=='global' and re.search(r'\b(send|invite|schedule|book)\b',job.get('transcript','').rsplit('New caller speech: ',1)[-1],re.I):
         required=['any_effect']
     with perf.db() as db:
         receipts={r['tool'] for r in db.execute("SELECT tool FROM execution_events WHERE job_id=? AND kind='action' AND status IN ('sent','verified')",(job['id'],))}
     accepted={'email':{'eli_phone_send_email','email_send'},'whatsapp':{'eli_phone_send_whatsapp'},
-        'imessage':{'eli_phone_send_imessage'},'calendar':{'eli_phone_calendar_invitation'},'any_effect':receipts}
+        'imessage':{'eli_phone_send_imessage'},'calendar':{'eli_phone_calendar_invitation'},'call':{'eli_phone_call_contact'},'any_effect':receipts}
     return any(not (accepted.get(item,set()) & receipts) for item in required)
 
 

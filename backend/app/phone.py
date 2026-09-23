@@ -555,7 +555,7 @@ def update_job(job_id: str, update: JobUpdate):
         if update.state=='completed' and required:
             tools={r['tool'] for r in db.execute("SELECT tool FROM phone_job_updates WHERE job_id=? AND kind='action' AND status IN ('sent','verified')",(job_id,))}
             accepted={'email':{'email_send','eli_phone_send_email'},'imessage':{'eli_phone_send_imessage'},
-                'whatsapp':{'eli_phone_send_whatsapp'},'calendar':{'eli_phone_calendar_invitation'}}
+                'whatsapp':{'eli_phone_send_whatsapp'},'calendar':{'eli_phone_calendar_invitation'},'call':{'eli_phone_call_contact'}}
             if any(not(tools & accepted.get(k,set())) for k in required):
                 raise HTTPException(409,'Verified action receipts must arrive before completion')
         if update.state == 'waiting_for_input' and not update.question.strip():
@@ -665,8 +665,18 @@ def task_notices(request:TaskNoticeRequest):
         if not intake:raise HTTPException(404)
         tasks=[dict(r) for r in db.execute('SELECT * FROM phone_jobs WHERE actor=? AND batch_id=?',(request.actor,request.intake_id))]
         notes=[]
+        calls_pending=False
         for row in [dict(intake)]+tasks:
             if row['state'] in {'resumed','expanded'}:continue
+            outgoing=db.execute('SELECT * FROM phone_outbound WHERE source_job=?',(row['id'],)).fetchone()
+            if outgoing:
+                from .phone_contact_calls import status
+                call_status=status(dict(outgoing))
+                calls_pending=calls_pending or not call_status['terminal']
+                # Coalesce provider queue/ringing updates into one acknowledgement.
+                notice_state=call_status['state'] if call_status['terminal'] else 'calling' if call_status['call_sid'] else 'queued'
+                notes.append({'id':row['id'],'state':notice_state,'content':call_status['content']})
+                continue
             if row['state']=='waiting_for_input':content=row['question']
             elif row['state'] in {'failed','uncertain'}:content=row['error'] or 'That task did not complete. Review its saved outcome before retrying.'
             elif row['state']=='cancelled':content='That task was cancelled before further execution.'
@@ -692,7 +702,7 @@ def task_notices(request:TaskNoticeRequest):
                     content=row['result'] if task['completion_allowed'] else 'This task has no verified completion yet.'
             else:continue
             if content:notes.append({'id':row['id'],'state':row['state'],'content':content[:2000]})
-        settled=intake['state'] not in {'planning','waiting_for_input'} and all(r['state'] in {'completed','failed','uncertain','cancelled','resumed'} for r in tasks)
+        settled=not calls_pending and intake['state'] not in {'planning','waiting_for_input'} and all(r['state'] in {'completed','failed','uncertain','cancelled','resumed'} for r in tasks)
     return {'notices':notes,'settled':settled}
 
 
@@ -849,6 +859,16 @@ def bridge_proposal(proposal: BridgeProposal):
     return propose_call(proposal.actor, OutboundProposal(**proposal.model_dump(exclude={'actor'})))
 
 
+class ContactCallRequest(BaseModel):
+    claim: str = Field(min_length=20,max_length=100)
+
+
+@router.post('/internal/phone/jobs/{job_id}/contact-call',dependencies=[Depends(bridge_auth)])
+def contact_call(job_id:str,request:ContactCallRequest):
+    from .phone_contact_calls import submit
+    return submit(job_id,request.claim)
+
+
 def propose_call(actor, proposal, callback_job=None, approved=False):
     if contains_phi(proposal.message+' '+proposal.purpose):
         raise HTTPException(400, 'Patient information cannot be used in this phone channel')
@@ -908,15 +928,18 @@ async def answer_outbound(identifier: str, request: Request):
             raise HTTPException(403)
         db.execute('UPDATE phone_outbound SET call_sid=? WHERE id=?', (form['CallSid'], identifier))
         root = Element('Response')
-        if outgoing['callback_job']:
-            if callers().get(outgoing['actor'],{}).get('phone') != outgoing['recipient']:
+        if outgoing['callback_job'] or outgoing['source_job']:
+            # The request belongs to its sender; the conversation belongs to the
+            # registered person who answers. Never load the sender's identity here.
+            recipient_actor=outgoing['recipient_actor'] if outgoing['source_job'] else outgoing['actor']
+            if callers().get(recipient_actor,{}).get('phone') != outgoing['recipient']:
                 raise HTTPException(403)
             old = db.execute("SELECT response FROM phone_events WHERE call_id=? AND nonce='entry'", (form['CallSid'],)).fetchone()
             if old:
                 return Response(old['response'], media_type='application/xml')
             nonce = secrets.token_urlsafe(18)
             db.execute('INSERT INTO phone_calls(id,actor,phone,nonce,created,outbound_id) VALUES (?,?,?,?,?,?)',
-                       (form['CallSid'], outgoing['actor'], outgoing['recipient'], nonce, time.time(), identifier))
+                       (form['CallSid'], recipient_actor, outgoing['recipient'], nonce, time.time(), identifier))
             if getattr(settings(), 'phone_pin_required', False):
                 gather = SubElement(root, 'Gather', input='dtmf', numDigits='8', timeout='10', method='POST', action=voice_url(f'/api/phone/auth/{nonce}', call_id=form['CallSid']))
                 prompt(gather, 'welcome', "Hi, I'm Eli, your AI assistant. Please enter your eight digit phone access code.")
@@ -928,7 +951,9 @@ async def answer_outbound(identifier: str, request: Request):
                     connect_stream(root,db,form['CallSid'])
                 else:
                     job=db.execute('SELECT result,question FROM phone_jobs WHERE id=?',(outgoing['callback_job'],)).fetchone()
-                    if job: say(root,job['question'] or job['result'][:2000])
+                    if outgoing['source_job']:
+                        say(root,"Hello, I'm Eli, the AI assistant. "+outgoing['message'])
+                    elif job: say(root,job['question'] or job['result'][:2000])
                     gather_request(root,nonce,form['CallSid'])
             db.execute('INSERT INTO phone_events VALUES (?,?,?)', (form['CallSid'], 'entry', tostring(root,encoding='unicode')))
         else:
@@ -1022,12 +1047,25 @@ async def phone_work_once():
             return
         db.execute("UPDATE phone_outbound SET state='preparing' WHERE id=?", (outgoing['id'],))
     try:
-        audio = None if outgoing['callback_job'] else await synthesize("Hello, I'm Eli, an AI assistant. "+outgoing['message'])
+        audio = None if outgoing['callback_job'] or outgoing['source_job'] else await synthesize("Hello, I'm Eli, an AI assistant. "+outgoing['message'])
     except Exception:
         with store().db() as db:
             db.execute("UPDATE phone_outbound SET state='failed',error='Speech generation failed. No call was placed.' WHERE id=?", (outgoing['id'],))
         return
     with store().db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        from . import phone_contact_calls as contact_calls
+        if outgoing['source_job']:
+            current=db.execute('SELECT state,expires FROM phone_outbound WHERE id=?',(outgoing['id'],)).fetchone()
+            if current['state']!='preparing' or current['expires']<=time.time():return
+            control=ledger.control(db,outgoing['source_job'])
+            if control['held'] and not control['superseded'] and not control['cancel_requested']:
+                db.execute("UPDATE phone_outbound SET state='approved' WHERE id=?",(outgoing['id'],))
+                return
+            try:contact_calls.reserve(db,dict(outgoing))
+            except ValueError as exc:
+                db.execute("UPDATE phone_outbound SET state='cancelled',error=? WHERE id=?",(str(exc),outgoing['id']))
+                return
         # Preparation has no external side effect. A user can cancel until dialing starts.
         if db.execute("UPDATE phone_outbound SET state='calling',audio=? WHERE id=? AND state='preparing' AND expires>?", (audio,outgoing['id'],time.time())).rowcount != 1:
             db.execute("UPDATE phone_outbound SET state='expired' WHERE id=? AND state='preparing' AND expires<=?",(outgoing['id'],time.time()))
@@ -1043,6 +1081,7 @@ async def phone_work_once():
         if result.status_code == 201 and re.fullmatch(r'CA[a-fA-F0-9]{32}', str(data.get('sid',''))):
             with store().db() as db:
                 db.execute("UPDATE phone_outbound SET call_sid=?,state=CASE WHEN state='calling' THEN 'queued' ELSE state END WHERE id=?", (data['sid'],outgoing['id']))
+                contact_calls.finish(db,dict(outgoing),'verified',{'call_sid':data['sid'],'recipient':outgoing['recipient'],'scope':'call_submission'})
         else:
             code = str(data.get('code','unknown'))
             if not re.fullmatch(r'\d{3,8}|unknown',code):
@@ -1050,9 +1089,11 @@ async def phone_work_once():
             state = 'failed' if 400 <= result.status_code < 500 else 'uncertain'
             with store().db() as db:
                 db.execute('UPDATE phone_outbound SET state=?,error=? WHERE id=?', (state,'Twilio did not confirm the call (code '+code+'). It was not retried.',outgoing['id']))
+                contact_calls.finish(db,dict(outgoing),'rejected' if state=='failed' else 'uncertain')
     except Exception:
         with store().db() as db:
             db.execute("UPDATE phone_outbound SET state='uncertain',error='Call submission was interrupted; confirm its status before trying again.' WHERE id=?", (outgoing['id'],))
+            contact_calls.finish(db,dict(outgoing),'uncertain')
 
 
 async def phone_worker():

@@ -64,8 +64,16 @@ def main():
             event.text=text;assert cross.hook(settings,event=event,gateway=gateway) is None
         event.text='The quarterly review';event.message_id='answer1'
         assert cross.hook(settings,event=event,gateway=gateway)['action']=='skip'
+        # Exercise the new call phrases with the installed gateway auth/source
+        # classes; neither the planner nor a telephony provider is invoked here.
+        for index,text in enumerate(['Call me','Can you give me a call?',
+                                      'Call Dr. Shaye and tell him the report is ready']):
+            event.text=text;event.message_id='call-'+str(index)
+            assert cross.hook(settings,event=event,gateway=gateway)['action']=='skip'
+        for text in ['What did I ask on our last call?','Can you call people?']:
+            event.text=text;assert cross.hook(settings,event=event,gateway=gateway) is None
         print(json.dumps({'passed':True,'native_source_and_authorization':True,'legacy_error_reproduced':True,
-                          'simulated_handoffs':len(submitted),'simulated_replies':len(sent),'real_sends':0}))
+                          'simulated_handoffs':len(submitted),'simulated_replies':len(sent),'call_intake_cases':3,'real_sends':0}))
 
 
 if __name__=='__main__':main()

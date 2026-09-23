@@ -309,11 +309,12 @@ class PhoneAdapter(BasePlatformAdapter):
                 if not data.get('success') and not data.get('waiting_for_input'):
                     action_error=data.get('error','The workflow step did not complete; review its saved result.')
                 prepared_state=data.get('state','')
-            elif plan.get('operation') in {'send_message','find_send_article','calendar_invitation'}:
+            elif plan.get('operation') in {'send_message','find_send_article','calendar_invitation','contact_call'}:
                 data=await self.prepared_turn(event,job)
                 prepared_state=data.get('state','')
                 if data.get('success') and (data.get('message_id') or data.get('event_id')):
                     answer='The requested '+plan['atomic_kind']+' has '+('a verified provider receipt.' if data.get('source_verified',True) else 'been accepted; source verification is pending.')
+                    if plan['operation']=='contact_call':answer=data['result']
                     if data.get('recipients'):answer+=' Recipients: '+', '.join(data['recipients'])+'.'
                     if data.get('article'):answer+=' Article: '+data['article']['title']+'. Source: '+data['article']['source']+'.'
                 else:
@@ -413,6 +414,8 @@ def register(ctx):
     ctx.register_hook('pre_llm_call',lambda **kw:performance.context(configuration(),schemas,**kw))
     from .cross_channel import hook
     ctx.register_hook('pre_gateway_dispatch',lambda **kw:hook(configuration(),**kw))
+    from .cross_channel import call_context
+    ctx.register_hook('pre_llm_call',lambda **kw:call_context(configuration(),**kw))
     ctx.register_hook('pre_tool_call',lambda **kw:performance.before_tool(configuration(),**kw))
     ctx.register_hook('post_tool_call',lambda **kw:performance.after_tool(configuration(),**kw))
     ctx.register_hook('post_api_request',lambda **kw:performance.model_timing(configuration(),**kw))
