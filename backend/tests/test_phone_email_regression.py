@@ -64,6 +64,19 @@ def test_ordinary_clarification_cannot_pause_ready_email(configured):
     assert phone.store().claim()['id']==ready
 
 
+def test_correction_fences_already_captured_request_still_being_planned(configured):
+    call,row=intake(configured,'Email Owner hello')
+    # The caller corrects the request while the planner is still processing it.
+    with phone.store().db() as db:ledger.hold(db,call['actor'],call['id'])
+    change(call,'Cancel that')
+    earlier=email(row)
+    assert phone.store().claim() is None
+    # An independent request captured after the hold is not part of that fence.
+    newer=email(change(call,'Email Owner a new message'),'a new message')
+    assert phone.store().claim()['id']==newer
+    with phone.store().db() as db:assert ledger.control(db,earlier)['held']
+
+
 def test_planner_questions_and_tasks_belong_to_current_call(configured,monkeypatch):
     configured[0].phone_dispatch_model='planner-fixture'
     call,row=intake(configured,'Email Owner')

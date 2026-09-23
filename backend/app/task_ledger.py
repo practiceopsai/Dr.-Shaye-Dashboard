@@ -18,7 +18,7 @@ STATES = {'planning': 'pending', 'queued': 'pending', 'claimed': 'running',
 HOLD_MATCH = """h.actor=j.actor AND (
     (h.task_ids IS NULL AND h.source=j.call_id) OR
     EXISTS (SELECT 1 FROM json_each(COALESCE(h.task_ids,'[]')) target
-            WHERE target.value=COALESCE(j.root_id,j.id)))"""
+            WHERE target.value=COALESCE(j.root_id,j.id) OR target.value=j.batch_id))"""
 
 
 def migrate(db):
@@ -132,8 +132,8 @@ def get(db, actor, task_id):
 
 def hold(db, actor, source, *, call_id=None):
     targets={r[0] for r in db.execute("""SELECT COALESCE(root_id,id) FROM phone_jobs
-        WHERE actor=? AND state IN ('queued','claimed','running','workflow','waiting_for_input')
-        AND execution_class!='intake' AND (? IS NULL OR call_id=?)""",(actor,call_id,call_id))}
+        WHERE actor=? AND state IN ('planning','queued','claimed','running','workflow','waiting_for_input')
+        AND (execution_class!='intake' OR state='planning') AND (? IS NULL OR call_id=?)""",(actor,call_id,call_id))}
     old=db.execute('SELECT task_ids FROM phone_task_holds WHERE actor=? AND source=?',(actor,source)).fetchone()
     if old and old['task_ids'] is not None:targets.update(json.loads(old['task_ids']))
     db.execute('''INSERT INTO phone_task_holds(actor,source,created,task_ids) VALUES (?,?,?,?)
