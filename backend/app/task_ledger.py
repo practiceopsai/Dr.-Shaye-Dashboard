@@ -13,6 +13,13 @@ TERMINAL = {'completed', 'failed', 'uncertain', 'cancelled'}
 STATES = {'planning': 'pending', 'queued': 'pending', 'claimed': 'running',
           'waiting_for_input': 'waiting_for_user', 'uncertain': 'failed', 'workflow':'running'}
 
+# A correction fences a finite set of logical tasks, never all future work by
+# that caller. Legacy holds are confined to their original conversation.
+HOLD_MATCH = """h.actor=j.actor AND (
+    (h.task_ids IS NULL AND h.source=j.call_id) OR
+    EXISTS (SELECT 1 FROM json_each(COALESCE(h.task_ids,'[]')) target
+            WHERE target.value=COALESCE(j.root_id,j.id)))"""
+
 
 def migrate(db):
     db.executescript('''
@@ -35,6 +42,8 @@ def migrate(db):
             actor TEXT NOT NULL, source TEXT NOT NULL, created REAL NOT NULL,
             PRIMARY KEY(actor,source));
     ''')
+    if 'task_ids' not in {r[1] for r in db.execute('PRAGMA table_info(phone_task_holds)')}:
+        db.execute('ALTER TABLE phone_task_holds ADD COLUMN task_ids TEXT')
 
 
 def event(db, task_id, kind, payload=None):
@@ -93,6 +102,7 @@ def snapshot(db, actor, task_id=None):
         if row['modified'] and state == 'pending': state = 'modified'
         mutation = plan.get('atomic_kind') in {'email','imessage','whatsapp','calendar','article','global','deliver'} or bool(plan.get('workflow',{}).get('channel') and plan.get('operation')=='workflow')
         confirmed = any(x['status'] in {'sent','verified'} for x in receipts) or any(x['state']=='verified' for x in effects)
+        blockers = holds_for(db, row['id']) if state not in TERMINAL else []
         tasks.append({'id':root,'job_id':row['id'],'version':row['version'],'parent_id':row['parent_task'],
             'intent_summary':plan.get('atomic_scope',row['transcript'].rsplit('New caller speech: ',1)[-1]),
             'parameters':{**plan.get('details',{}),'recipient':plan.get('recipient',''),
@@ -108,6 +118,7 @@ def snapshot(db, actor, task_id=None):
             'last_spoken_status':row['last_spoken_status'],'question':row['question'],
             'question_id':row['id'] if row['state']=='waiting_for_input' else None,
             'completion_allowed':state=='completed' and (not mutation or confirmed),
+            'held':bool(blockers), 'blockers':blockers,
             'receipts':receipts,'call_id':row['call_id'],
             'error':row['error'],'request':row['transcript'].rsplit('New caller speech: ',1)[-1]})
     return tasks
@@ -119,8 +130,20 @@ def get(db, actor, task_id):
     return tasks[0]
 
 
-def hold(db, actor, source):
-    db.execute('INSERT OR IGNORE INTO phone_task_holds VALUES (?,?,?)',(actor,source,time.time()))
+def hold(db, actor, source, *, call_id=None):
+    targets={r[0] for r in db.execute("""SELECT COALESCE(root_id,id) FROM phone_jobs
+        WHERE actor=? AND state IN ('queued','claimed','running','workflow','waiting_for_input')
+        AND execution_class!='intake' AND (? IS NULL OR call_id=?)""",(actor,call_id,call_id))}
+    old=db.execute('SELECT task_ids FROM phone_task_holds WHERE actor=? AND source=?',(actor,source)).fetchone()
+    if old and old['task_ids'] is not None:targets.update(json.loads(old['task_ids']))
+    db.execute('''INSERT INTO phone_task_holds(actor,source,created,task_ids) VALUES (?,?,?,?)
+        ON CONFLICT(actor,source) DO UPDATE SET task_ids=excluded.task_ids''',
+        (actor,source,time.time(),json.dumps(sorted(targets))))
+
+
+def holds_for(db, job_id):
+    rows=db.execute('SELECT h.source FROM phone_task_holds h JOIN phone_jobs j ON '+HOLD_MATCH+' WHERE j.id=?',(job_id,)).fetchall()
+    return [{'source':r['source'],'reason':'Execution is paused while a possible change or cancellation is clarified. Nothing has been sent by this task.'} for r in rows]
 
 
 def release(db, actor, source):
@@ -138,7 +161,7 @@ def control(db, job_id):
     meta = db.execute('SELECT * FROM phone_task_meta WHERE id=?',(root,)).fetchone() if root else None
     return {'state':row['state'],'task_id':root or job_id,'version':meta['version'] if meta else 1,
         'superseded':bool(meta and meta['current_job']!=job_id),'cancel_requested':bool(row['cancel_requested']),
-        'held':bool(db.execute('SELECT 1 FROM phone_task_holds WHERE actor=?',(row['actor'],)).fetchone())}
+        'held':bool(holds_for(db,job_id))}
 
 
 def require_mutable(task):

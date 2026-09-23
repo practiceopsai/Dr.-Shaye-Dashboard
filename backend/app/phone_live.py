@@ -69,6 +69,9 @@ has an unknown outcome; an irreversible action already committed cannot be unsen
 Only completion_allowed=true and that task's verified receipt permit a success
 claim. Queued, approved, waiting and uncertain never mean done. Report a specific
 failure honestly and offer the recorded recovery option.
+held=true means execution is paused, not working. Explain the recorded blocker
+plainly when the caller asks or at the next relevant pause. Never describe a queued
+task as actively sending. A failed task did not complete; do not promise progress.
 
 Background events update state, not the speaking queue. At a natural relevant break,
 briefly identify the original request when mentioning its result or needed question.
@@ -640,6 +643,8 @@ class LiveCall:
                 with phone.store().db() as db:
                     row=db.execute('SELECT state,execution_class FROM phone_jobs WHERE id=?',(job_id,)).fetchone()
                     children=[dict(r) for r in db.execute("SELECT id,state,question,plan FROM phone_jobs WHERE batch_id=? AND json_extract(plan,'$.operation') IS NOT 'workflow_step' ORDER BY created",(job_id,))]
+                    for child in children:
+                        child['held']=phone.ledger.control(db,child['id'])['held']
                     return row,children
             row,children=await asyncio.to_thread(read_acceptance)
             if not row or row['state']=='planning':continue
@@ -649,7 +654,7 @@ class LiveCall:
             for child in children:
                 plan=json.loads(child['plan'])
                 summary.append({'task':child['id'],'scope':plan.get('atomic_scope'),'state':child['state'],
-                                'message':plan.get('message',{}).get('message'),'question':child['question']})
+                                'message':plan.get('message',{}).get('message'),'question':child['question'],'held':child['held']})
             await self.append('thinking','Validated intake. Only tasks with complete content are TASK_READY. '
                               'A waiting_for_input task is NOT accepted for execution. If its question has not already been asked, '
                               'ask once after the caller finishes their thought and while this task is relevant. '

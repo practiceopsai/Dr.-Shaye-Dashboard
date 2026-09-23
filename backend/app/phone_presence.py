@@ -91,6 +91,7 @@ def task_states(call, *, include_previous=False):
             'details':task['parameters'],'kind':task['parameters']['kind'],'recipient':task['parameters']['recipient'],
             'request':task['request'][:2500],'question':task['question'] if task['state']=='waiting_for_user' else '',
             'completion_allowed':task['completion_allowed'],'receipts':task['receipts'],
+            'held':task['held'],'blockers':task['blockers'],
             'irreversible_boundary_passed':task['irreversible_boundary_passed'],'effect_in_flight':task['effect_in_flight'],
             'result':(task['error'] or task['result_or_artifact_pointer'])[:500] if task['state'] in {'completed','failed'} else ''}
     return result
