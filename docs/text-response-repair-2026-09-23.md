@@ -39,6 +39,17 @@ Twilio message records. This repair addresses the confirmed Photon handoff
 failure; it does not establish SMS delivery on that separately configured number.
 BlueBubbles remains disconnected as previously deferred.
 
-Production deployment and a live delivery check must be recorded separately from
-the isolated test results. Voice audio/turn-taking, backend task execution,
-personality and memory are outside this code change.
+Release `da710331e86bf9d73f0439dee88d1fe2395b65dd` was installed on the idle native
+gateway with verified backups and configuration preserved. The gateway restarted;
+Photon needed one startup retry and then reconnected. WhatsApp and the phone bridge
+also connected. The installed source hash matches the tested candidate, the eight
+old intercepted records are held for review, and no new text-worker errors were
+observed after restart. CI passed 93 native tests, 248 backend tests, 46 frontend
+tests and the frontend build. The backend returned 200 and the OpenAI voice session
+handshake succeeded after the native restart.
+
+A fresh real text exchange and handset response-time measurement remain pending
+operator participation/approval. No verification text was sent without approval.
+Voice audio/turn-taking, backend task execution, personality and memory were not
+changed. `task_question_actors` is now a legacy cache; its age is no longer a text
+worker health signal. Delivered questions are tracked per conversation instead.
