@@ -6,6 +6,9 @@ from . import performance,operations,messaging
 
 def run(job,settings,perf,invoke=None):
     plan=json.loads(job.get('plan') or '{}') if isinstance(job.get('plan'),str) else job.get('plan',{})
+    if plan.get('operation')=='contact_call':
+        from .contact_calls import run as call
+        return call(job,settings,perf)
     if plan.get('operation')=='find_send_article':
         from .articles import run as article
         return article(job,settings,perf)

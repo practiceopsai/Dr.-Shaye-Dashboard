@@ -26,6 +26,22 @@ class CrossChannelTests(unittest.TestCase):
     def test_chat_and_internal_phone_work_keep_native_pipeline(self):
         self.event.text='What is your name?';self.assertIsNone(self.hook())
         self.event.text='Send the document';self.source.platform.value='eli_phone';self.assertIsNone(self.hook())
+    def test_calls_from_either_registered_chat_identity_are_captured(self):
+        self.settings['identities']['operator@example.com']={'user_id':'user2'}
+        for platform in ['photon','bluebubbles','whatsapp']:
+            for user in ['user1','user2']:
+                self.source.platform.value=platform;self.source.user_id=user
+                for text in ['Call me','Can you call me?','Please call Dr. Shaye and tell him hello',
+                             'Call Fabio and tell him hello','Can you give me a call?','Eli, call me']:
+                    with self.subTest(platform=platform,user=user,text=text):
+                        self.event.text=text;self.event.message_id=platform+user+text
+                        self.assertEqual(self.hook()['action'],'skip')
+        with cross.connect(self.db) as db:self.assertEqual(db.execute('SELECT count(*) FROM task_ingress').fetchone()[0],36)
+    def test_call_history_and_capability_questions_remain_conversation(self):
+        for text in ['What did I ask on our last call?','How can you call me?','Can you call people?',
+                     'Did you call Dr. Shaye?','My phone is broken','I enjoyed our last call']:
+            with self.subTest(text=text):
+                self.event.text=text;self.assertIsNone(self.hook())
     def test_restart_preserves_ingress_message_id(self):
         self.hook();first=cross.ready(self.db)
         self.assertEqual(cross.ready(self.db),first)

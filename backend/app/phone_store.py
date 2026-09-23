@@ -71,6 +71,7 @@ class PhoneStore:
             # Additive migration: existing accepted work and receipts stay intact.
             for table, columns in {
                 'phone_calls': {'ended': 'REAL'},
+                'phone_outbound': {'source_job':'TEXT','recipient_actor':'TEXT'},
                 'phone_live_streams': {'last_seen': 'REAL'},
                 'phone_jobs': {'root_id': 'TEXT', 'parent_id': 'TEXT', 'question': "TEXT NOT NULL DEFAULT ''",
                                'resume_job': 'TEXT', 'followup_allowed': 'INTEGER NOT NULL DEFAULT 0',
@@ -86,6 +87,7 @@ class PhoneStore:
                     if name not in present:
                         db.execute('ALTER TABLE '+table+' ADD COLUMN '+name+' '+definition)
             db.execute('CREATE UNIQUE INDEX IF NOT EXISTS phone_job_effect ON phone_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL')
+            db.execute('CREATE UNIQUE INDEX IF NOT EXISTS phone_outbound_source_job ON phone_outbound(source_job) WHERE source_job IS NOT NULL')
             for name, definition in {
                 'batch_id': 'TEXT', 'resource_key': "TEXT NOT NULL DEFAULT 'global'",
                 'depends_on': "TEXT NOT NULL DEFAULT '[]'", 'plan_lease': 'REAL',

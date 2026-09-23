@@ -10,8 +10,27 @@ from contextlib import contextmanager
 
 CHANNELS={'whatsapp','telegram','photon','bluebubbles'}
 ACTION=re.compile(r'\b(?:send|email|text|draft|write|research|find|search|check|schedule|book|reschedule|create|prepare|save|remember|remind|cancel|change|modify|prioritize|reprioritize|actually|instead|never mind|forget|wait|approve)\b',re.I)
+CALL_REQUEST=re.compile(r'^\s*(?:(?:hi|hey|hello|okay|ok)[,!\s]+)?(?:eli[,!\s]+)?'
+    r'(?:(?:please|can you|could you|would you|will you|I (?:want|need|would like) you to)\s+)?(?:please\s+)?'
+    r'(?:(?:call|phone|dial)\s+\S|give\s+.+?\s+a\s+call\b)',re.I)
 SOCIAL=re.compile(r'^\s*(?:(?:hi|hey|hello+|thanks|thank you|goodbye|bye)\b|(?:who|what|when|where|why|how|are|is|do|does|can|could)\b)',re.I)
 _ready=False
+
+
+def call_context(settings, **kwargs):
+    from gateway.session_context import get_session_env
+    if not _ready or not settings.get('task_ledger_text_enabled',True):return None
+    user=get_session_env('HERMES_SESSION_USER_ID','')
+    if get_session_env('HERMES_SESSION_PLATFORM','') not in CHANNELS or get_session_env('HERMES_SESSION_CHAT_TYPE','')!='dm':return None
+    identities=settings.get('identities',{})
+    if not any(c.get('user_id')==user for c in identities.values()):return None
+    return {'context':'Current calling capability: registered people can request one live call in this chat by saying '
+        'Call me, or Call [registered person] and tell them [message]. The durable task service handles those requests '
+        'without a second dashboard approval; me means the authenticated sender. It asks for missing message details. '
+        'Known call recipients: '+', '.join(c['name'] for c in identities.values())+'. '
+        'Only an explicit current request authorizes dialing. Do not place a call to demonstrate a capability answer, '
+        'promise a call was placed without its provider receipt, or redial an uncertain call. '
+        'Other recipients retain the separate exact-call approval flow. A completed call is not proof every word was heard.'}
 
 
 def path():
@@ -51,8 +70,8 @@ def hook(settings,event=None,gateway=None,**kwargs):
     actor=next((a for a,c in settings.get('identities',{}).items() if c.get('user_id')==source.user_id),None)
     text=getattr(event,'text','') or ''
     if not actor or not text or len(text)>6000 or text.startswith('/'):return None
-    if re.match(r'^\s*(?:how (?:do|can|would)|what (?:is|are)|can you (?:send|email|text) (?:people|messages|emails))\b',text,re.I):return None
-    if not ACTION.search(text):
+    if re.match(r'^\s*(?:how (?:do|can|would)|what (?:is|are)|can you (?:send|email|text|call|phone|dial) (?:people|messages|emails|someone))\b',text,re.I):return None
+    if not ACTION.search(text) and not CALL_REQUEST.search(text):
         # Old voice questions do not own this text conversation. Only a question
         # successfully delivered HERE can make free-form speech a task answer.
         if SOCIAL.search(text) or not re.search(r'\w',text):return None
