@@ -109,13 +109,14 @@ class PhoneStore:
 
     def claim(self, lane='any'):
         import secrets
+        from . import task_ledger as ledger
         now = time.time()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             # Claimed/started work is not replayed after a missing heartbeat.
             # The native worker retains an operation receipt and reconciles it.
             row = db.execute("""SELECT * FROM phone_jobs j WHERE state='queued' AND cancel_requested IS NULL
-                AND NOT EXISTS (SELECT 1 FROM phone_task_holds h WHERE h.actor=j.actor)
+                AND NOT EXISTS (SELECT 1 FROM phone_task_holds h WHERE """+ledger.HOLD_MATCH+""")
                 AND (?='any' OR (execution_class='foreground_read')=?)
                 AND NOT EXISTS (SELECT 1 FROM phone_jobs a WHERE a.actor=j.actor
                   AND a.state IN ('claimed','running') AND (?='any' OR (a.execution_class='foreground_read')=?)

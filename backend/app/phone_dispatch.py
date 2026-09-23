@@ -88,10 +88,22 @@ Missing details keep the requested action kind (email here); question contains
 what to ask. The kind clarification is reserved ONLY for an ANSWER to an existing
 question with a nonempty resume_request_id, never a new request needing a question.
 For self-contained generic drafts, optional personalization is not essential.
+For a dictated email, a resolved recipient and the exact caller-approved body are
+sufficient. The existing email tool supplies the default subject "Message from
+Eli". Do NOT ask for a subject or topic when the caller dictates a complete body,
+and do not mark that request uncertain for lacking a subject. A previous question
+asking for an optional subject was unnecessary and must not keep the job waiting.
 question is empty for fully specified work. No model-generated wording is approval.
 A message body containing words like 'and send' is data, not another task.
 An answer or an additional fragment of the SAME request clearly addressing a supplied CURRENT CALL question has kind clarification
 and resume_request_id equal to that question's ID. New imperatives like "text Fabio"
+are not required to answer a question. If a current email task asks what to say,
+"Say hello this is a test" supplies its body: return a clarification job targeting
+that question. Do not discard dictation as conversation or as a reconfirmation of
+a ready job while that task is still waiting for its message content. Incomplete
+tasks in current_tasks are the SAME tasks as their entries in open_questions,
+not additional competing email requests.
+New imperatives like "text Fabio"
 are new work only when they request an independent action. A reply like "email,
 two o'clock tomorrow, label it AI Test Meeting" answers the calendar question;
 it does NOT start a new email job. "About AI and send the link to Fabio" extends
@@ -163,7 +175,9 @@ NEW_TASK is represented by jobs; ANSWER by a clarification job targeting its que
 MODIFY, CANCEL, PRIORITIZE, STATUS_CHECK and CHAT are represented by operations.
 operations is [] unless one of these applies; conversation_only means jobs is empty,
 not that there are no operations. Use the supplied stable task id, never a guessed ID.
-Every utterance is interpreted against current_tasks across the actor's channels.
+current_tasks and open_questions belong to this conversation. other_tasks is
+historical reference for explicit cross-conversation changes/status only; never
+let a similar recipient in an earlier call make a new fully specified task ambiguous.
 Corrections such as actually, wait, instead, forget and never mind favor modifying or
 cancelling existing work, not duplicating it. MODIFY.changes is the exact new caller
 instruction, not a generated replacement; preserve unspecified fields. A continuation
@@ -259,18 +273,29 @@ async def plan_intake(row, cfg):
     from .phone_presence import context_for,task_states
     caller = row['transcript'].rsplit('New caller speech: ', 1)[-1]
     context = await asyncio.to_thread(context_for,{'actor': row['actor'],'id':row['call_id']}, cfg)
+    # The voice model has prior-call recall. Task intake uses the canonical scoped
+    # ledger below, not historical transcripts that resemble fresh instructions.
+    context.pop('previous_call',None)
+    context.pop('phone_work',None)
     def read_ledger():
-        with phone.store().db() as db:return ledger.snapshot(db,row['actor'])[:100]
-    current=await asyncio.to_thread(read_ledger)
-    for task in current:
+        with phone.store().db() as db:
+            current={r[0] for r in db.execute('SELECT COALESCE(root_id,id) FROM phone_jobs WHERE actor=? AND call_id=?',(row['actor'],row['call_id']))}
+            return ledger.snapshot(db,row['actor']),current
+    tasks,current_ids=await asyncio.to_thread(read_ledger)
+    for task in tasks:
         task.pop('execution_log',None)
         task.update(task_id=task['id'],details=task['parameters'],recipient=task['parameters'].get('recipient',''),
                     kind=task['parameters'].get('kind',''),scope=task['intent_summary'],
                     ledger_state=task['state'],state=task['execution_state'])
     payload = {'transcript': row['transcript'], 'session_context': context,
-               'open_questions': await asyncio.to_thread(phone.store().questions,row['actor']),
-               'current_tasks':{task['id']:task for task in current},
+               'open_questions': await asyncio.to_thread(phone.store().questions,row['actor'],row['call_id']),
+               'current_tasks':{task['id']:task for task in tasks if task['id'] in current_ids},
                'last_spoken_prompt':last_spoken_prompt(row)}
+    from .task_intent import control_hint
+    # Cross-channel task control remains available on an explicit control request.
+    # Ordinary dictation and clarification see only this conversation's questions.
+    if control_hint(caller):
+        payload['other_tasks']={t['id']:t for t in tasks if t['id'] not in current_ids and t['state'] not in ledger.TERMINAL}
     prior=json.loads(row.get('plan') or '{}')
     if prior.get('continuation_replan'):
         payload.update(continuation_replan=prior,open_questions=[])
@@ -293,7 +318,7 @@ async def plan_intake(row, cfg):
     # This flag is derived metadata, not an authorization decision. A valid
     # correction with zero new jobs must not be discarded over its redundant flag.
     if isinstance(parsed.get('jobs'),list):parsed['conversation_only']=not parsed['jobs']
-    if parsed.get('input_quality')=='uncertain' and not parsed.get('jobs') and not parsed.get('routing_question'):
+    if parsed.get('input_quality')=='uncertain' and parsed.get('operations') and not parsed.get('routing_question'):
         parsed['routing_question']='Please finish the instruction before I change or send anything.'
     if len(parsed.get('jobs',[]))==1 and (prior.get('continuation_replan') or parsed['jobs'][0].get('kind')=='clarification'):
         # The canonical task owns this evidence. Re-summarizing cannot drop an
@@ -357,7 +382,7 @@ def commit_plan(row, plan):
             quotes = '\n'.join(task['quotes'])
             resume_id=task.get('resume_request_id','')
             if task['kind']=='clarification':
-                allowed={q['id']:q for q in phone.store().questions(row['actor'])}
+                allowed={q['id']:q for q in phone.store().questions(row['actor'],row['call_id'])}
                 if resume_id not in allowed:raise ValueError('Clarification target is not in this call')
                 from .task_workflow import approve_delivery
                 identifier=approve_delivery(db,row['actor'],resume_id,quotes,row['id']) or phone.store().resume(row['actor'],resume_id,quotes,allowed[resume_id]['call_id'],
@@ -425,11 +450,15 @@ def commit_plan(row, plan):
         if routing and durable_routing:
             # A routing question is a durable intake envelope, not another task.
             # Retain its hold until this exact question has been answered.
-            prior.update(routing_clarification=True)
+            from .task_intent import control_hint
+            blocks_work=bool(prior.get('routing_blocks_work') or control_hint(caller) or
+                any(op['type'] in {'MODIFY','CANCEL'} for op in plan.get('operations',[])))
+            prior.update(routing_clarification=True,routing_blocks_work=blocks_work)
             prior.pop('continuation_replan',None)
             db.execute("UPDATE phone_jobs SET state='waiting_for_input',question=?,result=?,plan=? WHERE id=?",
                 (routing,routing,json.dumps(prior),row['id']))
-            ledger.hold(db,row['actor'],row['call_id'])
+            if blocks_work:
+                ledger.hold(db,row['actor'],row['call_id'],call_id=None if control_hint(caller) else row['call_id'])
             db.execute('INSERT OR IGNORE INTO phone_notices(job_id,actor,kind,content,created) VALUES (?,?,?,?,?)',
                 (row['id'],row['actor'],'question',routing,now))
         if not ids or routing or operation_results:
