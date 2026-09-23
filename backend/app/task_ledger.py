@@ -143,7 +143,7 @@ def hold(db, actor, source, *, call_id=None):
 
 def holds_for(db, job_id):
     rows=db.execute('SELECT h.source FROM phone_task_holds h JOIN phone_jobs j ON '+HOLD_MATCH+' WHERE j.id=?',(job_id,)).fetchall()
-    return [{'source':r['source'],'reason':'Execution is paused while a possible change or cancellation is clarified. Nothing has been sent by this task.'} for r in rows]
+    return [{'source':r['source'],'reason':'Further execution is paused while a possible change or cancellation is clarified. Check the recorded receipts for any earlier completed action.'} for r in rows]
 
 
 def release(db, actor, source):
